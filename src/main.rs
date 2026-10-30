@@ -65,8 +65,8 @@ impl State {
         }
     }
 
-    /// The current Source switches and disabled CLIs, re-reading config.toml if it changed.
-    fn settings(&self) -> (config::Sources, Vec<String>) {
+    /// The current Source switches, disabled CLIs and matching, re-reading config.toml if it changed.
+    fn settings(&self) -> (config::Sources, Vec<String>, complete::Matching) {
         let path = config::config_path();
         let mut c = self.config.lock().unwrap();
         let now = mtime(&path);
@@ -78,7 +78,11 @@ impl State {
             }
             c.0 = now;
         }
-        (c.1.sources(), c.1.generators.disable.clone())
+        (
+            c.1.sources(),
+            c.1.generators.disable.clone(),
+            c.1.matching(),
+        )
     }
 }
 
@@ -269,11 +273,12 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
                     words: &words,
                     now: now_secs(),
                 };
-                let (sources, disabled) = state.settings();
+                let (sources, disabled, matching) = state.settings();
                 let gens = sources.generators.then_some((&state.gens, &notify));
                 let cx = complete::Ctx {
                     gens,
                     disabled: &disabled,
+                    matching,
                     ..complete::Ctx::new(&state.store, &dir, sources)
                 };
                 let suggestions = complete::suggest(&cx, &state.history.lock().unwrap(), &r);

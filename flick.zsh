@@ -100,9 +100,13 @@ _flick_on_data() {
 _flick_words() {
   local -a words=(${(z)LBUFFER})
   [[ $LBUFFER == *[[:space:]] || -z $LBUFFER ]] && words+=('')
+  # The command under the cursor starts after the last separator. `do`, `then` and `else` only
+  # count where a command could start (`for x in a; do git ch`), not as words (`cd do`).
   local i
-  for (( i = $#words; i > 0; i-- )); do
-    [[ ${words[i]} == (\;|\||\|\||\&|\&\&|\|\&|\(|\)|\{|\}|do|then|else) ]] && break
+  for (( i = $#words - 1; i > 0; i-- )); do
+    [[ ${words[i]} == (\;|\||\|\||\&|\&\&|\|\&|\(|\)|\{|\}) ]] && break
+    [[ ${words[i]} == (do|then|else) ]] &&
+      { (( i == 1 )) || [[ ${words[i-1]} == (\;|\||\|\||\&|\&\&|\|\&|\(|\)|\{|\}|$'\n') ]] } && break
   done
   words=("${(@)words[i+1,-1]}")
   (( $#words > 1 )) && [[ -n ${aliases[${words[1]}]} ]] && words=(${(z)aliases[${words[1]}]} "${(@)words[2,-1]}")
@@ -146,6 +150,24 @@ _flick_clear() {
   FLICK_OPEN=0
   POSTDISPLAY=
   region_highlight=(${region_highlight:#*memo=flick})
+}
+
+# Positions (0-based) in $1 of the letters of $2, for the match style: a prefix in any case,
+# else the first in-order match (fuzzy). Result in reply; empty if they don't match.
+_flick_matched() {
+  reply=()
+  local c=${(L)1} t=${(L)2}
+  [[ -n $t ]] || return 0
+  if [[ ${c[1,$#t]} == "$t" ]]; then
+    reply=({0..$(( $#t - 1 ))})
+    return 0
+  fi
+  local -i i=1 j=1
+  while (( i <= $#c && j <= $#t )); do
+    [[ ${c[i]} == "${t[j]}" ]] && { reply+=$(( i - 1 )); (( j++ )) }
+    (( i++ ))
+  done
+  (( j > $#t )) || reply=()
 }
 
 # Adds one highlight: $1 start, $2 end, then style parts joined with commas (empty ones skipped).
@@ -210,7 +232,7 @@ _flick_render() {
   # Every row is padded to the same width, so a panel background reads as one block. Each row
   # is drawn as separate, non-overlapping parts, each with its full style:
   # icon and name, the typed part of the name (match), the rest of the name, the description.
-  local -i pw=$(( widest < width - indent ? widest : width - indent )) m start namestart descstart
+  local -i pw=$(( widest < width - indent ? widest : width - indent )) start namestart descstart p run hit
   local row pad=${(l:indent:)} base name_style
   for (( i = 1; i <= $#lines; i++ )); do
     row=$lines[i]
@@ -220,9 +242,7 @@ _flick_render() {
 
     typed=$FLICK_WORD
     [[ ${FLICK_KIND[top+i-1]} == l ]] && typed=$LBUFFER
-    m=0
-    [[ -n $typed && ${(L)${FLICK_INSERT[top+i-1]}[1,$#typed]} == ${(L)typed} ]] && m=$#typed
-    (( m = m < namew ? m : namew ))
+    _flick_matched ${FLICK_INSERT[top+i-1]} $typed
     if (( top + i - 1 == FLICK_SEL )); then
       base=$FLICK_STYLE_SELECTED name_style=
     else
@@ -231,8 +251,18 @@ _flick_render() {
     namestart=$(( start + iconw )) descstart=$(( start + iconw + namew ))
     (( descstart = descstart < start + pw ? descstart : start + pw ))
     _flick_hl $start $namestart $base $name_style
-    _flick_hl $namestart $(( namestart + m )) $base $name_style $FLICK_STYLE_MATCH
-    _flick_hl $(( namestart + m )) $descstart $base $name_style
+    # The name, in runs: matched letters get the match style on top of the row's.
+    p=0
+    while (( namestart + p < descstart )); do
+      hit=$(( ${reply[(Ie)$p]} > 0 ))
+      for (( run = p + 1; namestart + run < descstart && $(( ${reply[(Ie)$run]} > 0 )) == hit; run++ )); do :; done
+      if (( hit )); then
+        _flick_hl $(( namestart + p )) $(( namestart + run )) $base $name_style $FLICK_STYLE_MATCH
+      else
+        _flick_hl $(( namestart + p )) $(( namestart + run )) $base $name_style
+      fi
+      p=$run
+    done
     if (( top + i - 1 == FLICK_SEL )); then
       _flick_hl $descstart $(( start + pw )) $base
     else

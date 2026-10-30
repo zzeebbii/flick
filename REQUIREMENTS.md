@@ -59,7 +59,7 @@ Every change is measured against these with `flick bench`. They are targets, to 
 
 ### Ranking
 
-1. Exact prefix matches rank above fuzzy matches.
+1. Match quality first: a prefix in the exact case, then a prefix in another case, then a fuzzy match (the typed letters in order, from 2 letters on; not for History lines). Case is ignored unless a capital letter is typed ("smart case", as in fzf and ripgrep). `matching = "smart" | "exact" | "ignore-case"` and `fuzzy = true | false` in config. Ghost text appears only for exact-case prefixes; the matched letters are highlighted in the Menu.
 2. Frecency: Suggestions used often and recently rank higher.
 3. A boost for commands previously run in the current directory.
 

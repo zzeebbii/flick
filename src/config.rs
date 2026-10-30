@@ -8,6 +8,8 @@ pub const EXAMPLE: &str = r#"# flick config. Every key is optional; these are th
 trigger = "typing"   # "typing": the Menu opens as you type. "tab": only when you press Tab.
 rows = 8             # Menu rows (1-20)
 align = "left"       # "left": the Menu starts at the left edge. "cursor": under the word being typed.
+matching = "smart"   # "smart": ignore case unless you type a capital letter. "exact" or "ignore-case".
+fuzzy = true         # also match letters in order, e.g. "dl" -> "Downloads" (ranked last; not for History)
 theme = "default"    # "default", "panel" (dark card, 24-bit colour), "nerd" (icons; needs a
                      # Nerd Font), or a file in themes/<name>.toml
 preset = "all"       # "all", "history-only" or "specs-only"
@@ -42,6 +44,8 @@ pub struct Config {
     pub trigger: String,
     pub rows: u8,
     pub align: String,
+    pub matching: String,
+    pub fuzzy: bool,
     pub theme: String,
     pub preset: String,
     pub sources: SourceSwitches,
@@ -134,6 +138,8 @@ impl Default for Config {
             trigger: "typing".into(),
             rows: 8,
             align: "left".into(),
+            matching: "smart".into(),
+            fuzzy: true,
             theme: "default".into(),
             preset: "all".into(),
             sources: SourceSwitches::default(),
@@ -281,6 +287,12 @@ impl Config {
                 self.align
             ));
         }
+        if !matches!(self.matching.as_str(), "smart" | "exact" | "ignore-case") {
+            return Err(format!(
+                "matching must be \"smart\", \"exact\" or \"ignore-case\", not {:?}",
+                self.matching
+            ));
+        }
         if !(1..=20).contains(&self.rows) {
             return Err(format!("rows must be 1-20, not {}", self.rows));
         }
@@ -291,6 +303,19 @@ impl Config {
             ));
         }
         Ok(())
+    }
+
+    pub fn matching(&self) -> crate::complete::Matching {
+        use crate::complete::Case;
+        let case = match self.matching.as_str() {
+            "exact" => Case::Exact,
+            "ignore-case" => Case::Ignore,
+            _ => Case::Smart,
+        };
+        crate::complete::Matching {
+            case,
+            fuzzy: self.fuzzy,
+        }
     }
 
     pub fn sources(&self) -> Sources {
@@ -399,6 +424,11 @@ mod tests {
         assert!(parse(r#"trigger = "sometimes""#).is_err());
         assert!(parse("rows = 0").is_err());
         assert!(parse(r#"align = "center""#).is_err());
+        assert!(parse(r#"matching = "loose""#).is_err());
+        let m = parse("matching = \"exact\"\nfuzzy = false")
+            .unwrap()
+            .matching();
+        assert_eq!((m.case, m.fuzzy), (crate::complete::Case::Exact, false));
         assert_eq!(parse(r#"align = "cursor""#).unwrap().align, "cursor");
         assert!(parse("colour = 1").is_err()); // unknown key: a typo shouldn't be silently ignored
     }

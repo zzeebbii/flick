@@ -278,7 +278,8 @@ pub fn files(dir: &str, current: &str, folders_only: bool) -> Vec<(String, Strin
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_string();
-            if !name.starts_with(partial) || (name.starts_with('.') && !partial.starts_with('.')) {
+            // Every visible name: ranking decides what matches (case, fuzzy). Dotfiles only when asked for.
+            if name.starts_with('.') && !partial.starts_with('.') {
                 return None;
             }
             let is_dir = e.path().is_dir(); // follows symlinks
@@ -410,10 +411,11 @@ mod tests {
                 .map(|(n, _)| n)
                 .collect::<Vec<_>>()
         };
+        // Every visible name; ranking decides what matches what was typed.
         assert_eq!(names("", false), vec!["my\\ file.txt", "src/"]);
         assert_eq!(names("", true), vec!["src/"]);
         assert_eq!(names("src/m", false), vec!["src/main.rs"]);
-        assert_eq!(names(".h", false), vec![".hidden"]);
+        assert!(names(".h", false).contains(&".hidden".to_string())); // dotfiles only when asked for
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

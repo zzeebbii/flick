@@ -140,20 +140,32 @@ impl History {
         dir: &str,
         now: u64,
         limit: usize,
+        ignore_case: bool,
     ) -> Vec<(&'a str, String)> {
         if prefix.trim().is_empty() {
             return vec![];
         }
         let d = hash(dir);
-        let mut hits: Vec<(&Entry, f32)> = self
-            .range(prefix)
-            .filter(|e| *e.cmd != *prefix && e.fails < e.uses && !e.cmd.contains('\n'))
-            .map(|e| (e, score(e, d, now)))
-            .collect();
-        hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let usable = |e: &&Entry| *e.cmd != *prefix && e.fails < e.uses && !e.cmd.contains('\n');
+        // Exact-case prefixes are a contiguous range; other-case ones need a scan (~8k entries).
+        let mut hits: Vec<(&Entry, bool, f32)> = if ignore_case {
+            let pick = |e: &'a Entry| crate::complete::starts_with_ignore_case(&e.cmd, prefix);
+            self.entries
+                .iter()
+                .filter(|e| pick(e))
+                .filter(usable)
+                .map(|e| (e, !e.cmd.starts_with(prefix), score(e, d, now)))
+                .collect()
+        } else {
+            self.range(prefix)
+                .filter(usable)
+                .map(|e| (e, false, score(e, d, now)))
+                .collect()
+        };
+        hits.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.total_cmp(&a.2))); // exact case first, then frecency
         hits.into_iter()
             .take(limit)
-            .map(|(e, _)| (&*e.cmd, describe(e, now)))
+            .map(|(e, _, _)| (&*e.cmd, describe(e, now)))
             .collect()
     }
 
@@ -361,7 +373,7 @@ mod tests {
             (now - 3600, Some(0), "", "git pull"),
         ]);
         let got: Vec<&str> = h
-            .lines("git p", "", now, 5)
+            .lines("git p", "", now, 5, false)
             .into_iter()
             .map(|(c, _)| c)
             .collect();
@@ -378,13 +390,13 @@ mod tests {
             (now - 3600, Some(1), "/b", "make typo"),
         ]);
         let in_b: Vec<&str> = h
-            .lines("make ", "/b", now, 5)
+            .lines("make ", "/b", now, 5, false)
             .into_iter()
             .map(|(c, _)| c)
             .collect();
         assert_eq!(in_b, vec!["make build", "make test"]); // `make typo` only ever failed
         let in_a: Vec<&str> = h
-            .lines("make ", "/a", now, 5)
+            .lines("make ", "/a", now, 5, false)
             .into_iter()
             .map(|(c, _)| c)
             .collect();

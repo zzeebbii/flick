@@ -18,6 +18,81 @@ pub struct Ctx<'a> {
     pub sources: Sources,
     /// CLIs whose Generators never run (`[generators] disable`).
     pub disabled: &'a [String],
+    pub matching: Matching,
+}
+
+/// How typed text matches a Suggestion (`matching` and `fuzzy` in config.toml).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Case {
+    /// Ignore case unless the typed text has a capital letter (like fzf and ripgrep).
+    Smart,
+    Exact,
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Matching {
+    pub case: Case,
+    /// Also match when the typed letters appear in order but not as a prefix (`dl` → `Downloads`).
+    pub fuzzy: bool,
+}
+
+pub const DEFAULT_MATCHING: Matching = Matching {
+    case: Case::Smart,
+    fuzzy: true,
+};
+
+/// Fuzzy matching starts at this many typed characters; fewer would match nearly everything.
+const FUZZY_MIN: usize = 2;
+
+impl Matching {
+    pub fn ignore_case(self, typed: &str) -> bool {
+        match self.case {
+            Case::Exact => false,
+            Case::Ignore => true,
+            Case::Smart => !typed.chars().any(char::is_uppercase),
+        }
+    }
+
+    /// How well `candidate` matches `typed`: 0 prefix in the exact case, 1 prefix in another
+    /// case, 2 fuzzy. `None`: no match.
+    pub fn tier(self, typed: &str, candidate: &str) -> Option<u8> {
+        if candidate.starts_with(typed) {
+            return Some(0);
+        }
+        let ignore_case = self.ignore_case(typed);
+        if ignore_case && starts_with_ignore_case(candidate, typed) {
+            return Some(1);
+        }
+        if self.fuzzy
+            && typed.chars().count() >= FUZZY_MIN
+            && in_order(typed, candidate, ignore_case)
+        {
+            return Some(2);
+        }
+        None
+    }
+}
+
+pub fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
+    let mut chars = s.chars().flat_map(char::to_lowercase);
+    prefix
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|p| chars.next() == Some(p))
+}
+
+/// Every character of `typed` appears in `candidate`, in order.
+fn in_order(typed: &str, candidate: &str, ignore_case: bool) -> bool {
+    let fold = |c: char| {
+        if ignore_case {
+            c.to_lowercase().next().unwrap_or(c)
+        } else {
+            c
+        }
+    };
+    let mut rest = candidate.chars().map(fold);
+    typed.chars().map(fold).all(|t| rest.any(|c| c == t))
 }
 
 impl Ctx<'_> {
@@ -29,6 +104,7 @@ impl Ctx<'_> {
             pending: Cell::default(),
             sources,
             disabled: &[],
+            matching: DEFAULT_MATCHING,
         }
     }
 
@@ -36,6 +112,7 @@ impl Ctx<'_> {
     fn without_generators(&self) -> Ctx<'_> {
         Ctx {
             gens: None,
+            matching: self.matching,
             ..Ctx::new(self.store, self.dir, self.sources)
         }
     }
@@ -60,6 +137,8 @@ pub struct Suggestion {
     pub kind: char,
     priority: f32,
     usage: f32,
+    /// From `Matching::tier`: better matches come first, whatever their usage.
+    tier: u8,
 }
 
 pub struct Request<'a> {
@@ -101,10 +180,17 @@ pub fn suggest(cx: &Ctx, history: &History, r: &Request) -> Vec<Suggestion> {
         };
         s.usage = history.usage(&line, r.dir, r.now);
     }
-    words.sort_by(|a, b| b.usage.total_cmp(&a.usage)); // stable: ties keep Spec order
+    // Match quality first, then use; stable, so ties keep Spec order.
+    words.sort_by(|a, b| a.tier.cmp(&b.tier).then(b.usage.total_cmp(&a.usage)));
 
     let mut lines = history
-        .lines(r.line, r.dir, r.now, 1 + EXTRA_LINES)
+        .lines(
+            r.line,
+            r.dir,
+            r.now,
+            1 + EXTRA_LINES,
+            cx.matching.ignore_case(r.line),
+        )
         .into_iter()
         .map(|(cmd, desc)| Suggestion {
             insert: cmd.to_string(),
@@ -112,6 +198,7 @@ pub fn suggest(cx: &Ctx, history: &History, r: &Request) -> Vec<Suggestion> {
             kind: 'l',
             priority: 0.0,
             usage: 0.0,
+            tier: 0,
         });
     lines.next().into_iter().chain(words).chain(lines).collect()
 }
@@ -125,7 +212,7 @@ pub fn complete(cx: &Ctx, words: &[String]) -> Vec<Suggestion> {
         return vec![];
     };
     let mut out = match done.split_first() {
-        None => commands(cx.store, current),
+        None => commands(cx.store),
         Some((cmd, rest)) => match cx.store.get(cmd) {
             Some(spec) if cx.disabled.contains(cmd) => {
                 walk(&cx.without_generators(), &spec, rest, current, vec![])
@@ -135,7 +222,7 @@ pub fn complete(cx: &Ctx, words: &[String]) -> Vec<Suggestion> {
             None => vec![],
         },
     };
-    rank(&mut out, current);
+    rank(cx.matching, &mut out, current);
     out
 }
 
@@ -147,11 +234,11 @@ fn is_assignment(w: &str) -> bool {
     })
 }
 
-fn commands(store: &Arc<Store>, current: &str) -> Vec<Suggestion> {
+/// Every command name; `rank` keeps the ones that match.
+fn commands(store: &Arc<Store>) -> Vec<Suggestion> {
     store
         .commands()
         .iter()
-        .filter(|n| n.starts_with(current))
         .map(|n| suggestion('c', n, None, None))
         .collect()
 }
@@ -245,7 +332,7 @@ fn walk<'a>(
     }
     if let Some(arg) = cmd.args.get(arg_index) {
         if arg.is_command {
-            out.extend(commands(cx.store, current));
+            out.extend(commands(cx.store));
         } else {
             out.extend(arg_suggestions(cx, arg, current));
         }
@@ -360,6 +447,7 @@ fn suggestion(
         kind,
         priority: priority.unwrap_or(50.0),
         usage: 0.0,
+        tier: 0,
     }
 }
 
@@ -373,19 +461,20 @@ impl Suggestion {
     }
 }
 
-/// Keeps Suggestions that start with `current` (falling back to a case-insensitive match),
-/// ordered by Spec priority, then alphabetically. History-based ranking comes in step 3.
-fn rank(out: &mut Vec<Suggestion>, current: &str) {
-    if out.iter().any(|s| s.insert.starts_with(current)) {
-        out.retain(|s| s.insert.starts_with(current));
-    } else {
-        let lower = current.to_lowercase();
-        out.retain(|s| s.insert.to_lowercase().starts_with(&lower));
-    }
-    out.retain(|s| s.insert != current);
+/// Keeps Suggestions that match `current` (see `Matching::tier`), best matches first, then by
+/// Spec priority, then alphabetically. History use reorders within a tier in `suggest`.
+fn rank(m: Matching, out: &mut Vec<Suggestion>, current: &str) {
+    out.retain_mut(|s| match m.tier(current, &s.insert) {
+        Some(t) if s.insert != current => {
+            s.tier = t;
+            true
+        }
+        _ => false,
+    });
     out.sort_by(|a, b| {
-        b.priority
-            .total_cmp(&a.priority)
+        a.tier
+            .cmp(&b.tier)
+            .then(b.priority.total_cmp(&a.priority))
             .then_with(|| a.insert.cmp(&b.insert))
     });
     out.dedup_by(|a, b| a.insert == b.insert);
@@ -608,6 +697,84 @@ mod tests {
         assert!(kinds("git commit --am").contains(&("--amend".into(), 'o')));
         assert!(kinds("cat sr").contains(&("src/".into(), 'd')));
         assert!(kinds("cat Cargo.t").contains(&("Cargo.toml".into(), 'f')));
+    }
+
+    #[test]
+    fn match_tiers() {
+        let m = DEFAULT_MATCHING;
+        assert_eq!(m.tier("do", "docs"), Some(0));
+        assert_eq!(m.tier("do", "Documents"), Some(1));
+        assert_eq!(m.tier("dl", "Downloads"), Some(2));
+        assert_eq!(m.tier("Do", "docs"), None); // smart case: a capital means exact case
+        assert_eq!(m.tier("Do", "Documents"), Some(0));
+        assert_eq!(m.tier("d", "Documents"), Some(1));
+        assert_eq!(m.tier("x", "box"), None); // one letter never matches fuzzily
+        let exact = Matching {
+            case: Case::Exact,
+            fuzzy: false,
+        };
+        assert_eq!(
+            (
+                exact.tier("do", "Documents"),
+                exact.tier("dl", "dl-x"),
+                exact.tier("dl", "downloads")
+            ),
+            (None, Some(0), None)
+        );
+        assert_eq!(
+            Matching {
+                case: Case::Ignore,
+                fuzzy: false
+            }
+            .tier("Do", "docs"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn folders_ignore_case_and_rank_by_match() {
+        let d = std::env::temp_dir().join(format!("flick-case-{}", std::process::id()));
+        for f in ["Documents", "Downloads", "docs", "Music"] {
+            std::fs::create_dir_all(d.join(f)).unwrap();
+        }
+        let s = store();
+        let cx = Ctx::new(&s, d.to_str().unwrap(), ALL);
+        let got = |l: &str| {
+            let words: Vec<String> = l.split(' ').map(String::from).collect();
+            complete(&cx, &words)
+                .into_iter()
+                .map(|s| s.insert)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(got("cd do"), vec!["docs/", "Documents/", "Downloads/"]);
+        assert_eq!(got("cd Do"), vec!["Documents/", "Downloads/"]);
+        assert_eq!(got("cd dl"), vec!["Downloads/"]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn history_lines_ignore_case_exact_first() {
+        let mut h = History::default();
+        h.record(100, Some(0), "", "Make build");
+        h.record(100, Some(0), "", "make test");
+        let words: Vec<String> = ["make", ""].map(String::from).to_vec();
+        let s = store();
+        let got = suggest(
+            &Ctx::new(&s, "", ALL),
+            &h,
+            &Request {
+                dir: "",
+                line: "make ",
+                words: &words,
+                now: 200,
+            },
+        );
+        let lines: Vec<&str> = got
+            .iter()
+            .filter(|s| s.kind == 'l')
+            .map(|s| s.insert.as_str())
+            .collect();
+        assert_eq!(lines, vec!["make test", "Make build"]);
     }
 
     #[test]

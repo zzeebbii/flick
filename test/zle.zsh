@@ -33,6 +33,9 @@ accepts 'ls | git stat'       'ls | git status'
 accepts 'FOO=1 brew ins'      'FOO=1 brew install'
 accepts 'echo hi && git comm' 'echo hi && git commit'
 accepts 'nosuchcmd x'         'nosuchcmd x'
+accepts 'for f in a; do git ch' 'for f in a; do git checkout'  # `do` starts a command here...
+type_line 'echo then'                                          # ...but is just a word here
+expect "A word spelled like a keyword isn't one" '[[ $FLICK_WORD == then ]]'
 
 type_line 'git ch'
 expect 'Ghost text, then Menu rows'   '[[ ${POSTDISPLAY%%$'"'\n'"'*} == eckout && ${#${(f)POSTDISPLAY}} -ge 3 ]]'
@@ -115,6 +118,30 @@ expect 'Cut-off rows end in …'            '[[ ${${(f)POSTDISPLAY}[3]} == *… 
 COLUMNS=120; type_line 'git commit --a'  # several options; the first is selected, the rest coloured
 expect 'Options get the option colour'    '[[ ${(j:|:)region_highlight} == *"bg=236,fg=3"* ]]'
 FLICK_STYLE_PANEL= FLICK_STYLE_MATCH=bold FLICK_STYLE_OPTION=fg=3
+
+# Matching: case is ignored unless a capital is typed, exact-case matches come first, and letters
+# in order match fuzzily, ranked last. Ghost text only for exact-case prefixes.
+() {
+  local here=$PWD
+  mkdir -p $tmp/case/{Documents,Downloads,docs}; cd $tmp/case
+  type_line 'cd do'
+  expect 'Exact case first, then other case' '[[ ${(j:,:)FLICK_INSERT} == "docs/,Documents/,Downloads/" ]]'
+  expect 'Ghost text for the exact-case match' '[[ ${POSTDISPLAY%%$'"'\n'"'*} == cs/ ]]'
+  _flick_down
+  expect 'No Ghost text for another case'    '[[ ${POSTDISPLAY%%$'"'\n'"'*} == "" ]]'
+  _flick_tab
+  expect 'Tab takes the other-case match'    '[[ $LBUFFER == "cd Documents/" ]]'
+  type_line 'cd Do'
+  expect 'A capital means exact case'        '[[ ${(j:,:)FLICK_INSERT} == "Documents/,Downloads/" ]]'
+  FLICK_STYLE_MATCH=underline
+  type_line 'cd dl'
+  expect 'Fuzzy: letters in order'           '[[ ${(j:,:)FLICK_INSERT} == "Downloads/" ]]'
+  # Selected row style is "standout": D (offset 0) and the first l (offset 4) are underlined, alone.
+  local -a under=(${(M)region_highlight:#*underline*})
+  expect 'Fuzzy: matched letters highlighted' '(( $#under == 2 )) && (( ${${(s: :)under[2]}[1]} - ${${(s: :)under[1]}[1]} == 4 ))'
+  FLICK_STYLE_MATCH=bold
+  cd $here
+}
 
 # A background process that can't start costs one wait, not one per keystroke.
 () {
