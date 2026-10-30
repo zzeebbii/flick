@@ -3,7 +3,7 @@
 zmodload zsh/net/socket zsh/zselect zsh/datetime 2>/dev/null || return
 autoload -Uz add-zle-hook-widget add-zsh-hook
 
-typeset -g FLICK_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/flick-$UID.sock
+typeset -g FLICK_SOCK=${FLICK_SOCK:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/flick-$UID.sock}
 (( $#FLICK_SOCK < 100 )) || FLICK_SOCK=/tmp/flick-$UID.sock  # macOS caps socket paths at ~104 bytes
 typeset -g FLICK_BIN=${0:A:h}/target/release/flick
 [[ -x $FLICK_BIN ]] || FLICK_BIN=${commands[flick]:-}
@@ -35,6 +35,7 @@ typeset -g FLICK_WORD=               # the word they replace
 typeset -gi FLICK_SEL=1              # selected Suggestion
 typeset -gi FLICK_OPEN=0             # Menu is showing
 typeset -g FLICK_LAST=               # LBUFFER the Suggestions were made for
+typeset -g FLICK_LAST_BUFFER=        # BUFFER at the last redraw, to tell edits from cursor moves
 typeset -gi FLICK_NO_GHOST=0         # zsh-autosuggestions owns Ghost text
 typeset -g FLICK_CMD=                # command line now running, for History
 typeset -gi FLICK_WATCHING=0         # zle -F handler installed on FLICK_FD
@@ -48,9 +49,9 @@ _flick_connect() {
   if ! zsocket $FLICK_SOCK 2>/dev/null; then
     [[ -n $FLICK_BIN ]] || return 1
     FLICK_HISTFILE=${FLICK_HISTFILE:-$HISTFILE} $FLICK_BIN serve $FLICK_SOCK &>/dev/null &!
-    # Only the first keystroke after flick starts pays this; it is up in a few ms.
+    # Only the first keystroke after flick starts pays this (~100 ms with a large History).
     local i
-    for i in {1..10}; do
+    for i in {1..30}; do
       zselect -t 1  # 10 ms, without forking sleep
       zsocket $FLICK_SOCK 2>/dev/null && break
     done || return 1
@@ -113,7 +114,7 @@ _flick_send() {
 
 # Asks the background process for Suggestions for LBUFFER.
 _flick_query() {
-  FLICK_KIND=() FLICK_INSERT=() FLICK_DESC=() FLICK_SEL=1 FLICK_LAST=$LBUFFER
+  FLICK_KIND=() FLICK_INSERT=() FLICK_DESC=() FLICK_SEL=1 FLICK_LAST=$LBUFFER FLICK_LAST_BUFFER=$BUFFER
   local -a reply; _flick_words
   FLICK_WORD=${reply[-1]}
   # One request per line: tabs and newlines inside words (e.g. from $'\n') must not leak.
@@ -202,11 +203,16 @@ _flick_move() {  # $1 = +1 or -1, wraps around
   _flick_render
 }
 
-# Runs before every redraw, so any edit (typing, paste, kill, undo) refreshes the Menu.
+# Runs before every redraw. Any edit refreshes the Menu, whatever widget made it (self-insert,
+# magic-space, paste, autopair, ...); cursor moves and recalled History lines close it.
 _flick_pre_redraw() {
-  [[ $LBUFFER == $FLICK_LAST ]] && return
+  [[ $LBUFFER == "$FLICK_LAST" && $BUFFER == "$FLICK_LAST_BUFFER" ]] && return
   [[ -z $FLICK_CONFIG_ERROR ]] || { zle -M "flick: $FLICK_CONFIG_ERROR (using defaults)"; FLICK_CONFIG_ERROR= }
-  if [[ $FLICK_TRIGGER == typing && $LASTWIDGET == (*self-insert*|*delete-char*|*kill*|*paste*|undo|redo|_flick_*) ]]; then
+  local edited=0
+  [[ $BUFFER != "$FLICK_LAST_BUFFER" ]] && edited=1
+  FLICK_LAST_BUFFER=$BUFFER
+  if [[ $FLICK_TRIGGER == typing ]] && (( edited )) &&
+     [[ $LASTWIDGET != (*history*|*search*|accept-*|push-*|get-line|fzf-*-widget) ]]; then
     (( FLICK_NO_GHOST )) || (( ! $+functions[_zsh_autosuggest_start] )) || {
       FLICK_NO_GHOST=1; zle -M "flick: zsh-autosuggestions is loaded; flick won't draw Ghost text. Remove it from your plugins."
     }
@@ -217,7 +223,7 @@ _flick_pre_redraw() {
   fi
 }
 
-_flick_line_finish() { _flick_clear; FLICK_INSERT=() FLICK_LAST= }
+_flick_line_finish() { _flick_clear; FLICK_INSERT=() FLICK_LAST= FLICK_LAST_BUFFER= }
 
 # History: remember the command when it starts, record it with its exit code when it ends.
 _flick_preexec() { FLICK_CMD=$1 }

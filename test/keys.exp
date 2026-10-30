@@ -19,6 +19,9 @@ stty rows 40 columns 120 < $spawn_out(slave,name)
 # The prompt marker is split in the command so `expect` can't match the echoed command itself.
 send "PS1='PRO''MPT> '; source $root/flick.zsh; FLICK_SOCK=$tmp/s.sock; alias gco='git checkout'\r"
 expect "PROMPT> "
+# oh-my-zsh binds Space to magic-space; the Menu must keep up with any editing widget.
+send "bindkey ' ' magic-space\r"
+expect "PROMPT> "
 send "setopt interactive_comments; zshaddhistory() { print -r -- \${1%\$'\\n'} >| $tmp/buf; return 1 }\r"
 expect "PROMPT> "
 
@@ -71,6 +74,8 @@ proc check_wait {name keys wait want} {
   if {$got eq $want} { puts "ok    $name -> '$got'" } else { puts "FAIL  $name: want '$want', got '$got'"; set fails 1 }
 }
 check_wait "branch list fills in by itself" [list "git checkout fea"] 1.0 "git checkout feature-x"
+# After a (magic-)space the Menu is open again without pressing Tab.
+check_wait "Menu reopens after a space" [list "git checkout "] 1.0 "git checkout feature-x"
 
 send "exit\r"
 expect eof
