@@ -33,6 +33,7 @@ New shells pick up changes; the background process re-reads `config.toml` as soo
 cargo test --release            # Spec walking, plus a check that every Spec in specs/ loads
 zsh test/zle.zsh                # zsh side against a real background process
 expect test/keys.exp            # real keystrokes in a real terminal
+expect test/cursor.exp          # align = "cursor": cursor position query and typed-ahead keys
 flick complete git checkout --  # print Suggestions for a line; the last word is the one being typed (no Generators)
 flick bench                     # speed and memory against the budgets in REQUIREMENTS.md
 node tools/fig-import/port-generators.mjs  # apply tools/fig-import/ports.json to specs/

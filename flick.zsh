@@ -12,6 +12,7 @@ typeset -g FLICK_BIN=${0:A:h}/target/release/flick
 # a theme or the binary is newer than the cache, so startup normally just sources one file.
 typeset -g FLICK_TRIGGER=typing FLICK_NATIVE=1 FLICK_CONFIG_ERROR=  # Trigger mode: typing | tab
 typeset -gi FLICK_ROWS=8
+typeset -g FLICK_ALIGN=left  # left | cursor: where the Menu starts
 typeset -g FLICK_STYLE_GHOST=fg=8 FLICK_STYLE_NAME=fg=6 FLICK_STYLE_DESC=fg=8 FLICK_STYLE_SELECTED=standout FLICK_STYLE_HISTORY=fg=5
 typeset -g FLICK_ICON_HISTORY= FLICK_ICON_COMMAND= FLICK_ICON_OPTION= FLICK_ICON_FILE= FLICK_ICON_FOLDER=
 typeset -g FLICK_KEY_ACCEPT='^I' FLICK_KEY_ACCEPT_GHOST='^[[C' FLICK_KEY_UP='^[[A' FLICK_KEY_DOWN='^[[B' FLICK_KEY_CLOSE='^['
@@ -39,6 +40,9 @@ typeset -g FLICK_LAST_BUFFER=        # BUFFER at the last redraw, to tell edits 
 typeset -gi FLICK_NO_GHOST=0         # zsh-autosuggestions owns Ghost text
 typeset -g FLICK_CMD=                # command line now running, for History
 typeset -gi FLICK_WATCHING=0         # zle -F handler installed on FLICK_FD
+typeset -gi FLICK_RETRY_AT=0         # after a failed start, don't try again before this time
+typeset -gi FLICK_ORIGIN=0           # screen column (1-based) where typing starts; 0 = unknown
+typeset -g FLICK_DSR=auto            # auto | on | off: does the terminal answer position queries?
 # Whatever Tab did before flick (expand-or-complete, fzf-tab, ...): Native completion, used
 # when flick has nothing to suggest.
 typeset -g FLICK_NATIVE_TAB=${${(z)"$(bindkey $FLICK_KEY_ACCEPT)"}[2]:-expand-or-complete}  # `"^I" widget`
@@ -48,13 +52,16 @@ _flick_connect() {
   [[ -n $FLICK_FD ]] && return 0
   if ! zsocket $FLICK_SOCK 2>/dev/null; then
     [[ -n $FLICK_BIN ]] || return 1
+    # A start that failed (broken binary, unusable socket path) is not retried on every
+    # keystroke: each attempt waits up to 300 ms.
+    (( EPOCHSECONDS >= FLICK_RETRY_AT )) || return 1
     FLICK_HISTFILE=${FLICK_HISTFILE:-$HISTFILE} $FLICK_BIN serve $FLICK_SOCK &>/dev/null &!
     # Only the first keystroke after flick starts pays this (~100 ms with a large History).
     local i
     for i in {1..30}; do
       zselect -t 1  # 10 ms, without forking sleep
       zsocket $FLICK_SOCK 2>/dev/null && break
-    done || return 1
+    done || { FLICK_RETRY_AT=$(( EPOCHSECONDS + 30 )); return 1 }
   fi
   FLICK_FD=$REPLY
   return 0
@@ -158,28 +165,45 @@ _flick_render() {
   local -i namew=0 i
   for (( i = top; i < top + rows; i++ )); do (( namew = $#FLICK_INSERT[i] > namew ? $#FLICK_INSERT[i] : namew )); done
   (( namew = namew > 32 ? 32 : namew ))
-  local row more= start icon name_style
-  local -i iconw=0
+  local more= icon
+  local -a lines styles
+  local -i iconw=0 widest=0
   [[ -n $FLICK_ICON_HISTORY$FLICK_ICON_COMMAND$FLICK_ICON_OPTION$FLICK_ICON_FILE$FLICK_ICON_FOLDER ]] && iconw=2
   (( n > rows )) && more=" ($FLICK_SEL/$n)"
   for (( i = top; i < top + rows; i++ )); do
-    icon= name_style=$FLICK_STYLE_NAME
-    if [[ ${FLICK_KIND[i]} == l ]]; then icon=$FLICK_ICON_HISTORY name_style=$FLICK_STYLE_HISTORY
+    icon= styles+=$FLICK_STYLE_NAME
+    if [[ ${FLICK_KIND[i]} == l ]]; then icon=$FLICK_ICON_HISTORY styles[-1]=$FLICK_STYLE_HISTORY
     elif [[ ${FLICK_INSERT[i]} == -* ]]; then icon=$FLICK_ICON_OPTION
     elif [[ ${FLICK_INSERT[i]} == */ ]]; then icon=$FLICK_ICON_FOLDER
     elif [[ ${FLICK_DESC[i]} == File ]]; then icon=$FLICK_ICON_FILE
     else icon=$FLICK_ICON_COMMAND
     fi
     (( iconw )) && icon="${(r:1:)icon} " || icon=
-    row="$icon${(r:namew:)FLICK_INSERT[i]}  ${FLICK_DESC[i]}"
-    (( i == top )) && row+=$more
-    row=${row[1,COLUMNS-1]}
-    start=$(( s + $#POSTDISPLAY + 1 ))
-    POSTDISPLAY+=$'\n'$row
-    if (( i == FLICK_SEL )); then
+    lines+="$icon${(r:namew:)FLICK_INSERT[i]}  ${FLICK_DESC[i]}"
+    (( i == top )) && lines[-1]+=$more
+    (( widest = $#lines[-1] > widest ? $#lines[-1] : widest ))
+  done
+
+  # align = cursor: start under the word being typed. Near the right edge, shift left to keep
+  # at least 40 columns (or the widest row, if narrower); longer descriptions are cut off.
+  local -i indent=0 width=$(( COLUMNS - 1 ))
+  if [[ $FLICK_ALIGN == cursor ]] && (( FLICK_ORIGIN )); then
+    local before=${LBUFFER%$FLICK_WORD}
+    local -i need=$(( widest < 40 ? widest : 40 ))
+    (( indent = (FLICK_ORIGIN - 1 + ${(m)#before}) % COLUMNS ))
+    (( indent = indent < width - need ? indent : width - need ))
+    (( indent = indent > 0 ? indent : 0 ))
+  fi
+
+  local row start pad=${(l:indent:)}
+  for (( i = 1; i <= $#lines; i++ )); do
+    row=${lines[i][1,width-indent]}
+    start=$(( s + $#POSTDISPLAY + 1 + indent ))
+    POSTDISPLAY+=$'\n'$pad$row
+    if (( top + i - 1 == FLICK_SEL )); then
       region_highlight+=("$start $(( start + $#row )) $FLICK_STYLE_SELECTED,memo=flick")
     else
-      region_highlight+=("$start $(( start + iconw + namew )) $name_style,memo=flick")
+      region_highlight+=("$start $(( start + iconw + namew )) ${styles[i]},memo=flick")
       region_highlight+=("$(( start + iconw + namew )) $(( start + $#row )) $FLICK_STYLE_DESC,memo=flick")
     fi
   done
@@ -221,6 +245,32 @@ _flick_pre_redraw() {
     FLICK_INSERT=() FLICK_LAST=$LBUFFER
     _flick_clear
   fi
+}
+
+# align = cursor: ask the terminal where typing starts (ESC[6n, answered with ESC[row;colR),
+# once per prompt. Keys typed meanwhile arrive mixed with the answer; they are handed back
+# to the line editor, in order. The answer ends the wait at once; the 0.5 s limit is generous
+# because an answer arriving after it (slow SSH) would be typed into the line as junk.
+# A terminal that never answers is not asked again.
+_flick_line_init() {
+  emulate -L zsh
+  FLICK_ORIGIN=0
+  [[ $FLICK_ALIGN == cursor && $FLICK_DSR != off ]] || return 0
+  local c buf= rest
+  print -n $'\e[6n' > /dev/tty
+  while IFS= read -rs -k 1 -t 0.5 c < /dev/tty; do
+    buf+=$c
+    [[ $buf =~ $'\e\\[([0-9]+);([0-9]+)R' ]] && break
+  done
+  if [[ $buf =~ $'\e\\[([0-9]+);([0-9]+)R' ]]; then
+    FLICK_ORIGIN=$match[2] FLICK_DSR=on
+    rest=${buf/"$MATCH"}
+  else
+    rest=$buf
+    [[ $FLICK_DSR == auto ]] && FLICK_DSR=off  # never answered, even with keys typed meanwhile
+  fi
+  [[ -n $rest ]] && zle -U -- "$rest"
+  return 0
 }
 
 _flick_line_finish() { _flick_clear; FLICK_INSERT=() FLICK_LAST= FLICK_LAST_BUFFER= }
@@ -265,6 +315,7 @@ _flick_right() {
 add-zsh-hook preexec _flick_preexec
 add-zsh-hook precmd _flick_precmd
 add-zle-hook-widget line-pre-redraw _flick_pre_redraw
+add-zle-hook-widget line-init _flick_line_init
 add-zle-hook-widget line-finish _flick_line_finish
 for w in _flick_down _flick_up _flick_esc _flick_tab _flick_right _flick_on_data; do zle -N $w; done
 () {

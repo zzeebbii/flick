@@ -25,10 +25,12 @@ expect "PROMPT> "
 send "setopt interactive_comments; zshaddhistory() { print -r -- \${1%\$'\\n'} >| $tmp/buf; return 1 }\r"
 expect "PROMPT> "
 
-# Wait while reading the terminal's output: unread output fills the pty buffer and blocks zsh.
+# Waits while reading the terminal's output. expect rounds its own timeouts down to whole
+# seconds, so sub-second waits poll instead.
 proc drain {secs} {
-  set ::timeout $secs
-  expect { -re ".+" { exp_continue } timeout {} }
+  set end [expr {[clock milliseconds] + int($secs * 1000)}]
+  set ::timeout 0
+  while {[clock milliseconds] < $end} { expect { -re ".+" { exp_continue } timeout {} }; after 10 }
   set ::timeout 5
 }
 
@@ -79,6 +81,7 @@ check_wait "Menu reopens after a space" [list "git checkout "] 1.0 "git checkout
 
 send "exit\r"
 expect eof
+
 catch {exec pkill -f "flick serve $tmp/s.sock"}
 file delete -force $tmp
 exit $fails

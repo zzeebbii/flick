@@ -7,6 +7,7 @@ pub const EXAMPLE: &str = r#"# flick config. Every key is optional; these are th
 
 trigger = "typing"   # "typing": the Menu opens as you type. "tab": only when you press Tab.
 rows = 8             # Menu rows (1-20)
+align = "left"       # "left": the Menu starts at the left edge. "cursor": under the word being typed.
 theme = "default"    # "default", "nerd" (needs a Nerd Font), or a file in themes/<name>.toml
 preset = "all"       # "all", "history-only" or "specs-only"
 
@@ -39,6 +40,7 @@ close = "^["
 pub struct Config {
     pub trigger: String,
     pub rows: u8,
+    pub align: String,
     pub theme: String,
     pub preset: String,
     pub sources: SourceSwitches,
@@ -116,6 +118,7 @@ impl Default for Config {
         Config {
             trigger: "typing".into(),
             rows: 8,
+            align: "left".into(),
             theme: "default".into(),
             preset: "all".into(),
             sources: SourceSwitches::default(),
@@ -236,6 +239,12 @@ impl Config {
                 self.trigger
             ));
         }
+        if !matches!(self.align.as_str(), "left" | "cursor") {
+            return Err(format!(
+                "align must be \"left\" or \"cursor\", not {:?}",
+                self.align
+            ));
+        }
         if !(1..=20).contains(&self.rows) {
             return Err(format!("rows must be 1-20, not {}", self.rows));
         }
@@ -287,6 +296,7 @@ pub fn to_zsh(c: &Config, t: &Theme, error: Option<&str>) -> String {
     let mut set = |k: &str, v: String| out.push_str(&format!("typeset -g {k}={v}\n"));
     set("FLICK_TRIGGER", q(&c.trigger));
     set("FLICK_ROWS", c.rows.to_string());
+    set("FLICK_ALIGN", q(&c.align));
     set("FLICK_NATIVE", u8::from(s.native).to_string());
     for (k, v) in [
         ("FLICK_STYLE_GHOST", &t.ghost),
@@ -346,6 +356,8 @@ mod tests {
     fn bad_values_are_errors() {
         assert!(parse(r#"trigger = "sometimes""#).is_err());
         assert!(parse("rows = 0").is_err());
+        assert!(parse(r#"align = "center""#).is_err());
+        assert_eq!(parse(r#"align = "cursor""#).unwrap().align, "cursor");
         assert!(parse("colour = 1").is_err()); // unknown key: a typo shouldn't be silently ignored
     }
 
@@ -357,6 +369,7 @@ mod tests {
         assert!(z.contains("typeset -g FLICK_KEY_ACCEPT='it'\\''s'"));
         assert!(z.contains("typeset -g FLICK_CONFIG_ERROR='bad '\\''x'\\'''"));
         assert!(z.contains("typeset -g FLICK_ROWS=8"));
+        assert!(z.contains("typeset -g FLICK_ALIGN='left'"));
     }
 
     #[test]

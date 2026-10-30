@@ -1,0 +1,69 @@
+#!/usr/bin/expect -f
+# Real-terminal check for align = "cursor": flick asks the terminal where typing starts
+# (ESC[6n); keys typed meanwhile must survive, and the Menu must start under the word.
+# Run: expect test/cursor.exp   (after cargo build --release)
+set root [file dirname [file dirname [file normalize [info script]]]]
+set tmp [exec mktemp -d]
+set env(FLICK_HISTORY) $tmp/history.tsv
+set env(FLICK_HISTFILE) $tmp/none
+set env(XDG_CACHE_HOME) $tmp/cache
+set f [open $tmp/config.toml w]; puts $f {align = "cursor"}; close $f
+set env(FLICK_CONFIG) $tmp/config.toml
+set timeout 5
+log_user 0
+
+# Waits while reading the terminal's output. expect rounds its own timeouts down to whole
+# seconds, so sub-second waits poll instead.
+proc drain {secs} {
+  set end [expr {[clock milliseconds] + int($secs * 1000)}]
+  set ::timeout 0
+  while {[clock milliseconds] < $end} { expect { -re ".+" { exp_continue } timeout {} }; after 10 }
+  set ::timeout 5
+}
+proc wait_for {path} { for {set i 0} {$i < 60 && ![file exists $path]} {incr i} { drain 0.05 }; file exists $path }
+
+spawn -noecho zsh -f -i
+stty rows 40 columns 120 < $spawn_out(slave,name)
+# expect is not a terminal emulator: answer "where is the cursor?" the way one would, with
+# column 9, right after the 8-column prompt.
+expect_before -re {\x1b\[6n} { send "\x1b\[5;9R"; exp_continue }
+send "PS1='PRO''MPT> '; source $root/flick.zsh; FLICK_SOCK=$tmp/s.sock\r"
+expect "PROMPT> "
+
+set fails 0
+# The second command arrives while the next prompt is asking the terminal where it is. Its
+# exact output file only appears if every key survived, in order.
+send "true\recho typed-ahead > $tmp/ahead\r"
+if {[wait_for $tmp/ahead]} { puts "ok    keys typed ahead survive" } else { puts "FAIL  keys typed ahead were lost"; set fails 1 }
+
+send "_dump() { print -r -- \$POSTDISPLAY >| $tmp/pd }; zle -N _dump; bindkey '^\[\[24~' _dump; touch $tmp/ready\r"
+wait_for $tmp/ready
+send "git ch"; drain 0.5
+send "\x1b\[24~"
+if {[wait_for $tmp/pd]} {
+  set f [open $tmp/pd]; set row [lindex [split [read $f] "\n"] 1]; close $f
+  # "PROMPT> " is 8 columns and "git " 4 more, so rows start at column 12.
+  if {[regexp {^ {12}\S} $row]} { puts "ok    Menu starts under the word" } else { puts "FAIL  Menu row: '$row'"; set fails 1 }
+} else { puts "FAIL  no Menu captured"; set fails 1 }
+
+send "\x15exit\r"
+expect eof
+
+# A terminal that never answers: flick asks once, then keeps the Menu at the left edge, and
+# keys typed while it waited still arrive.
+spawn -noecho zsh -f -i
+stty rows 40 columns 120 < $spawn_out(slave,name)
+send "PS1='PRO''MPT> '; source $root/flick.zsh; FLICK_SOCK=$tmp/s.sock\r"
+expect "PROMPT> "
+send "echo silent > $tmp/silent\r"
+if {[wait_for $tmp/silent]} { puts "ok    no answer: typed keys still arrive" } else { puts "FAIL  no answer: typed keys lost"; set fails 1 }
+send "print -r -- \$FLICK_DSR > $tmp/dsr\r"
+wait_for $tmp/dsr; drain 0.2
+set f [open $tmp/dsr]; set dsr [string trim [read $f]]; close $f
+if {$dsr eq "off"} { puts "ok    no answer: not asked again" } else { puts "FAIL  FLICK_DSR is '$dsr'"; set fails 1 }
+send "exit\r"
+expect eof
+
+catch {exec pkill -f "flick serve $tmp/s.sock"}
+file delete -force $tmp
+exit $fails

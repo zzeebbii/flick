@@ -70,6 +70,7 @@ Menu order: the best History line comes first, so it is also the Ghost text. The
 - **Ghost text**: the top Suggestion, dimmed, after the cursor. It replaces `zsh-autosuggestions`.
 - **Menu**: up to 8 rows, each showing an icon (optional, needs a Nerd Font), the name and a dimmed description. It scrolls within those 8 rows.
 - **Trigger modes**: as-you-type and on-demand (Tab), switchable in config. The default is as-you-type: the spike measured ~0.4 ms per keystroke (see `spike/RESULTS.md`).
+- `align = "left"` (default) starts the Menu at the left edge. `align = "cursor"` starts it under the word being typed: flick asks the terminal for the cursor position once per prompt and replays any keys typed meanwhile. Near the right edge it shifts left to keep at least 40 columns. A terminal that doesn't answer is asked once, then `left` is used.
 - When the prompt is at the bottom of the window, scroll up to make room for the Menu. If the window is shorter than ~10 rows, show only Ghost text.
 
 ### Keys (all rebindable)
