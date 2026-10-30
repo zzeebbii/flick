@@ -7,3 +7,5 @@ The import (2026-10-30) showed that 98% of Generators (5,193 of 5,316) relied on
 So Specs get a small set of declarative output-parsing settings instead: split the output into lines, capture name and description with a pattern, or read a field from JSON. We hand-port Generators to those settings for the CLIs the user runs most, starting with git (14 distinct Generators), docker (18), brew (9) and npm (2). Every other Generator stays `needsCode: true` and falls back to Native completion.
 
 If coverage turns out noticeably worse than Fig's, embedding a small engine such as QuickJS is the upgrade path.
+
+As of 2026-10-30, 205 Generators are ported across git, docker, brew, npm and cd, using regex line patterns and JSON field extraction.

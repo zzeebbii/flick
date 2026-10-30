@@ -19,10 +19,17 @@ expect "PROMPT> "
 send "setopt interactive_comments; zshaddhistory() { print -r -- \${1%\$'\\n'} >| $tmp/buf; return 1 }\r"
 expect "PROMPT> "
 
+# Wait while reading the terminal's output: unread output fills the pty buffer and blocks zsh.
+proc drain {secs} {
+  set ::timeout $secs
+  expect { -re ".+" { exp_continue } timeout {} }
+  set ::timeout 5
+}
+
 set fails 0
 proc check {name keys want} {
   global tmp fails
-  foreach k $keys { send -- $k; sleep 0.2 }
+  foreach k $keys { send -- $k; drain 0.2 }
   send "\x01#\r"
   expect "PROMPT> "
   set f [open "$tmp/buf"]; set got [string range [string trimright [read $f] "\n"] 1 end]; close $f
@@ -36,6 +43,25 @@ check "Esc closes; Right moves"      [list "git ch" "\x1b" "\x1b\[C"] "git ch"
 check "Tab twice builds a command"   [list "dock" "\t" "bu" "\t"]   "docker build "
 # The previous line lingers in history as "#docker build ", so Up with the Menu closed recalls it.
 check "Up recalls history when closed" [list "\x1b\[A"]           "#docker build "
+
+# Generators: the branch list arrives in the background and is drawn without another keystroke,
+# so Right can take it.
+exec git init -q $tmp/repo
+exec git -C $tmp/repo -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+exec git -C $tmp/repo branch feature-x
+send "cd $tmp/repo\r"
+expect "PROMPT> "
+proc check_wait {name keys wait want} {
+  global tmp fails
+  foreach k $keys { send -- $k; drain 0.2 }
+  drain $wait
+  send "\x1b\[C"; drain 0.2
+  send "\x01#\r"
+  expect "PROMPT> "
+  set f [open "$tmp/buf"]; set got [string range [string trimright [read $f] "\n"] 1 end]; close $f
+  if {$got eq $want} { puts "ok    $name -> '$got'" } else { puts "FAIL  $name: want '$want', got '$got'"; set fails 1 }
+}
+check_wait "branch list fills in by itself" [list "git checkout fea"] 1.0 "git checkout feature-x"
 
 send "exit\r"
 expect eof

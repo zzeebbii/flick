@@ -4,6 +4,7 @@ zmodload zsh/net/socket zsh/zselect zsh/datetime 2>/dev/null || return
 autoload -Uz add-zle-hook-widget add-zsh-hook
 
 typeset -g FLICK_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/flick-$UID.sock
+(( $#FLICK_SOCK < 100 )) || FLICK_SOCK=/tmp/flick-$UID.sock  # macOS caps socket paths at ~104 bytes
 typeset -g FLICK_BIN=${0:A:h}/target/release/flick
 [[ -x $FLICK_BIN ]] || FLICK_BIN=${commands[flick]:-}
 typeset -g FLICK_TRIGGER=${FLICK_TRIGGER:-typing}  # typing | tab (Trigger mode)
@@ -17,6 +18,7 @@ typeset -gi FLICK_OPEN=0             # Menu is showing
 typeset -g FLICK_LAST=               # LBUFFER the Suggestions were made for
 typeset -gi FLICK_NO_GHOST=0         # zsh-autosuggestions owns Ghost text
 typeset -g FLICK_CMD=                # command line now running, for History
+typeset -gi FLICK_WATCHING=0         # zle -F handler installed on FLICK_FD
 
 _flick_connect() {
   [[ -n $FLICK_FD ]] && return 0
@@ -31,6 +33,34 @@ _flick_connect() {
     done || return 1
   fi
   FLICK_FD=$REPLY
+  return 0
+}
+
+# A Generator is running; redraw when it finishes (`!`) while the shell is idle.
+# Watched only while waiting, so an idle shell isn't woken for nothing.
+_flick_watch()   { (( FLICK_WATCHING )) || { zle -F -w $FLICK_FD _flick_on_data 2>/dev/null && FLICK_WATCHING=1 } }
+_flick_unwatch() { (( FLICK_WATCHING )) && zle -F $FLICK_FD 2>/dev/null; FLICK_WATCHING=0 }
+
+_flick_disconnect() {
+  [[ -n $FLICK_FD ]] || return 0
+  _flick_unwatch
+  exec {FLICK_FD}>&-
+  FLICK_FD=
+}
+
+# zle -F handler: the background process wrote while the shell was idle.
+_flick_on_data() {
+  local line got=0
+  while read -t 0 -r -u $1 line; do got=1; done
+  if (( ! got )) || [[ -n $2 ]]; then  # nothing readable: the connection closed
+    _flick_disconnect
+    return
+  fi
+  _flick_unwatch
+  (( $#FLICK_INSERT || FLICK_OPEN )) || [[ -n $LBUFFER ]] || return
+  FLICK_LAST=
+  _flick_query && _flick_render || _flick_clear
+  zle -R
 }
 
 # Words of the command under the cursor, with the command's alias expanded.
@@ -54,7 +84,7 @@ _flick_escape() { REPLY=${${${1//\\/\\\\}//$'\t'/\\t}//$'\n'/\\n} }
 _flick_send() {
   _flick_connect || return 1
   print -r -u $FLICK_FD -- $1 2>/dev/null && return 0
-  exec {FLICK_FD}>&-; FLICK_FD=
+  _flick_disconnect
   _flick_connect && print -r -u $FLICK_FD -- $1 2>/dev/null
 }
 
@@ -70,7 +100,10 @@ _flick_query() {
   _flick_escape $PWD; dir=$REPLY
   _flick_escape $LBUFFER
   _flick_send "c"$'\t'$dir$'\t'$REPLY$'\t'${(pj:\t:)reply} || return 1
-  while IFS= read -r -u $FLICK_FD line && [[ -n $line ]]; do
+  while IFS= read -r -u $FLICK_FD line; do
+    [[ $line == '!' ]] && continue  # a refresh notice, not part of this answer
+    [[ $line == '~' ]] && { _flick_watch; continue }
+    [[ -z $line ]] && break
     FLICK_KIND+=${line[1]}
     line=${line[3,-1]}
     FLICK_INSERT+=${line%%$'\t'*} FLICK_DESC+=${line#*$'\t'}
@@ -191,7 +224,7 @@ add-zsh-hook preexec _flick_preexec
 add-zsh-hook precmd _flick_precmd
 add-zle-hook-widget line-pre-redraw _flick_pre_redraw
 add-zle-hook-widget line-finish _flick_line_finish
-for w in _flick_down _flick_up _flick_esc _flick_tab _flick_right; do zle -N $w; done
+for w in _flick_down _flick_up _flick_esc _flick_tab _flick_right _flick_on_data; do zle -N $w; done
 bindkey '^[[B' _flick_down  '^[OB' _flick_down
 bindkey '^[[A' _flick_up    '^[OA' _flick_up
 bindkey '^[[C' _flick_right '^[OC' _flick_right

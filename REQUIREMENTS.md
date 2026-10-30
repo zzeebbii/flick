@@ -43,7 +43,8 @@ Every change is measured against these with `flick bench`. They are targets, to 
 ### Generators
 
 - A Generator runs a command and reads its output using declarative parsing settings: split the output into lines, capture name and description with a pattern, or read a field from JSON. There is no JavaScript (ADR 0003).
-- Hand-port the Generators of the most-used CLIs first: git, docker, brew, npm. Other Generators fall back to Native completion until they are ported.
+- Hand-port the Generators of the most-used CLIs first: git, docker, brew, npm. Other Generators fall back to Native completion until they are ported. The format is documented in `specs/README.md`.
+- Generator results rank above files and static values.
 - Generators never block typing. Static Suggestions show immediately, and Generator results fill in when they arrive.
 - Each Generator has its own timeout and a short-lived cache.
 - Generators that use the network can be disabled per CLI.

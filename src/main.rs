@@ -10,7 +10,11 @@
 //!                                 (kind `w` replaces the current word, `l` the whole line), then
 //!                                 an empty line
 //!   r <time> <exit> <dir> <cmd>   record a command that just ran; no answer
+//!
+//! An answer ends with a `~` line before the empty line when a Generator is still running.
+//! When it finishes, flick sends a line `!` between answers: asking again gives new Suggestions.
 mod complete;
+mod generate;
 mod history;
 mod spec;
 
@@ -31,6 +35,7 @@ const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 struct State {
     store: spec::Store,
     history: Mutex<History>,
+    gens: Arc<generate::Generators>,
 }
 
 fn main() {
@@ -38,6 +43,7 @@ fn main() {
     let state = State {
         store: spec::Store::new(specs_dir()),
         history: Mutex::new(History::open(&history_path(), Some(&zsh_history_path()))),
+        gens: Arc::default(),
     };
     match args.first().map(String::as_str) {
         Some("serve") if args.len() == 2 => serve(Path::new(&args[1]), Arc::new(state)),
@@ -50,7 +56,13 @@ fn main() {
                 words: &args[1..],
                 now: now_secs(),
             };
-            for s in complete::suggest(&state.store, &state.history.lock().unwrap(), &r) {
+            let cx = complete::Ctx {
+                store: &state.store,
+                dir: r.dir,
+                gens: None,
+                pending: Default::default(),
+            };
+            for s in complete::suggest(&cx, &state.history.lock().unwrap(), &r) {
                 println!(
                     "{}\t{}\t{}",
                     if s.whole_line { 'l' } else { 'w' },
@@ -152,7 +164,14 @@ fn serve(socket: &Path, state: Arc<State>) {
 }
 
 fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
-    let mut out = stream.try_clone()?;
+    // Shared with Generator threads, which write `!` when they finish; whole lines only.
+    let out = Arc::new(Mutex::new(stream.try_clone()?));
+    let notify: generate::Notify = {
+        let out = Arc::clone(&out);
+        Arc::new(move || {
+            let _ = out.lock().unwrap().write_all(b"!\n");
+        })
+    };
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     loop {
@@ -182,8 +201,13 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
                     words: &words,
                     now: now_secs(),
                 };
-                let suggestions =
-                    complete::suggest(&state.store, &state.history.lock().unwrap(), &r);
+                let cx = complete::Ctx {
+                    store: &state.store,
+                    dir: &dir,
+                    gens: Some((&state.gens, &notify)),
+                    pending: Default::default(),
+                };
+                let suggestions = complete::suggest(&cx, &state.history.lock().unwrap(), &r);
                 let mut resp = String::new();
                 for s in suggestions.into_iter().take(MAX_SUGGESTIONS) {
                     let clean = |t: &str| t.replace(['\t', '\n', '\r'], " ");
@@ -194,11 +218,14 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
                         clean(&s.description)
                     ));
                 }
+                if cx.pending.get() {
+                    resp.push_str("~\n"); // a Generator will finish later and send `!`
+                }
                 resp.push('\n');
-                out.write_all(resp.as_bytes())?;
+                out.lock().unwrap().write_all(resp.as_bytes())?;
             }
             // Unknown or malformed: still answer a `c`-shaped request so the shell never waits forever.
-            [kind, ..] if *kind != "r" => out.write_all(b"\n")?,
+            [kind, ..] if *kind != "r" => out.lock().unwrap().write_all(b"\n")?,
             _ => {}
         }
     }

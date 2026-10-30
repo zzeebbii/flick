@@ -18,5 +18,6 @@ Type `git ch`: ↑/↓ choose a Suggestion, Tab takes it (plus a space), → tak
 cargo test --release            # Spec walking, plus a check that every Spec in specs/ loads
 zsh test/zle.zsh                # zsh side against a real background process
 expect test/keys.exp            # real keystrokes in a real terminal
-flick complete git checkout --  # print Suggestions for a line; the last word is the one being typed
+flick complete git checkout --  # print Suggestions for a line; the last word is the one being typed (no Generators)
+node tools/fig-import/port-generators.mjs  # apply tools/fig-import/ports.json to specs/
 ```

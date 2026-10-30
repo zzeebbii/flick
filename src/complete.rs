@@ -1,7 +1,20 @@
 //! Turns the line being typed into Suggestions: Spec walking for the current word, History for
 //! the whole line, one ranking for both.
+use crate::generate::{self, Generators, Notify};
 use crate::history::History;
 use crate::spec::{Arg, LoadSpec, Opt, Store, Subcommand, SuggestionSpec};
+use std::cell::Cell;
+use std::sync::Arc;
+
+/// What completing needs besides the words: the Specs, the directory, and Generators
+/// (absent in tests and `flick complete`, where nothing runs in the background).
+pub struct Ctx<'a> {
+    pub store: &'a Store,
+    pub dir: &'a str,
+    pub gens: Option<(&'a Arc<Generators>, &'a Notify)>,
+    /// Set when a Generator is still running for this request.
+    pub pending: Cell<bool>,
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Suggestion {
@@ -28,8 +41,8 @@ const EXTRA_LINES: usize = 3;
 /// The Menu, in order. The best History line (if any) comes first, so it is also the Ghost
 /// text; then Spec Suggestions ordered by how much the user has used each; then a few more
 /// History lines.
-pub fn suggest(store: &Store, history: &History, r: &Request) -> Vec<Suggestion> {
-    let mut words = complete(store, r.words);
+pub fn suggest(cx: &Ctx, history: &History, r: &Request) -> Vec<Suggestion> {
+    let mut words = complete(cx, r.words);
     let typed: Vec<&str> = r
         .words
         .iter()
@@ -62,17 +75,18 @@ pub fn suggest(store: &Store, history: &History, r: &Request) -> Vec<Suggestion>
 
 /// `words` are the words of the current command, already alias-expanded by the shell.
 /// The last word is the one being typed; it is empty right after a space.
-pub fn complete(store: &Store, words: &[String]) -> Vec<Suggestion> {
+pub fn complete(cx: &Ctx, words: &[String]) -> Vec<Suggestion> {
     // `FOO=1 BAR=2 cmd ...`: skip leading environment assignments.
     let words = &words[words.iter().take_while(|w| is_assignment(w)).count()..];
     let Some((current, done)) = words.split_last() else {
         return vec![];
     };
     let mut out = match done.split_first() {
-        None => commands(store, current),
-        Some((cmd, rest)) => match store.get(cmd) {
-            Some(spec) => walk(store, &spec, rest, current, vec![]),
-            None => vec![],
+        None => commands(cx.store, current),
+        Some((cmd, rest)) => match cx.store.get(cmd) {
+            Some(spec) => walk(cx, &spec, rest, current, vec![]),
+            // No Spec: offer files, the usual argument (Native completion replaces this in step 5).
+            None => file_suggestions(cx, current, false),
         },
     };
     rank(&mut out, current);
@@ -98,7 +112,7 @@ fn commands(store: &Store, current: &str) -> Vec<Suggestion> {
 
 /// Walks the finished words `done` down from `cmd`, then suggests for `current`.
 fn walk<'a>(
-    store: &Store,
+    cx: &Ctx,
     cmd: &'a Subcommand,
     done: &[String],
     current: &str,
@@ -135,17 +149,17 @@ fn walk<'a>(
             && let Some(sub) = cmd.subcommands.iter().find(|s| has_name(&s.name, word))
         {
             persistent.extend(cmd.options.iter().filter(|o| o.is_persistent));
-            return descend(store, sub, &done[i + 1..], current, persistent);
+            return descend(cx, sub, &done[i + 1..], current, persistent);
         }
         if let Some(arg) = cmd.args.get(arg_index) {
             if arg.is_command {
                 let mut words = done[i..].to_vec();
                 words.push(current.to_string());
-                return complete(store, &words);
+                return complete(cx, &words);
             }
             if let Some(LoadSpec::Path(p)) = &arg.load_spec {
-                return match store.get(p) {
-                    Some(spec) => walk(store, &spec, &done[i + 1..], current, vec![]),
+                return match cx.store.get(p) {
+                    Some(spec) => walk(cx, &spec, &done[i + 1..], current, vec![]),
                     None => vec![],
                 };
             }
@@ -156,7 +170,7 @@ fn walk<'a>(
     }
 
     if let Some(arg) = pending {
-        return arg_suggestions(arg);
+        return arg_suggestions(cx, arg, current);
     }
     if current.starts_with('-') && !only_args {
         return cmd
@@ -185,9 +199,9 @@ fn walk<'a>(
     }
     if let Some(arg) = cmd.args.get(arg_index) {
         if arg.is_command {
-            out.extend(commands(store, current));
+            out.extend(commands(cx.store, current));
         } else {
-            out.extend(arg_suggestions(arg));
+            out.extend(arg_suggestions(cx, arg, current));
         }
     }
     out
@@ -195,20 +209,20 @@ fn walk<'a>(
 
 /// Enters a subcommand, following its `loadSpec` if it lives in another file.
 fn descend<'a>(
-    store: &Store,
+    cx: &Ctx,
     sub: &'a Subcommand,
     done: &[String],
     current: &str,
     persistent: Vec<&'a Opt>,
 ) -> Vec<Suggestion> {
     match &sub.load_spec {
-        Some(LoadSpec::Path(p)) => match store.get(p) {
+        Some(LoadSpec::Path(p)) => match cx.store.get(p) {
             // Persistent options don't cross into a separately loaded file.
-            Some(spec) => walk(store, &spec, done, current, vec![]),
-            None => walk(store, sub, done, current, persistent),
+            Some(spec) => walk(cx, &spec, done, current, vec![]),
+            None => walk(cx, sub, done, current, persistent),
         },
-        Some(LoadSpec::Inline(spec)) => walk(store, spec, done, current, persistent),
-        None => walk(store, sub, done, current, persistent),
+        Some(LoadSpec::Inline(spec)) => walk(cx, spec, done, current, persistent),
+        None => walk(cx, sub, done, current, persistent),
     }
 }
 
@@ -223,8 +237,9 @@ fn has_name(names: &[Box<str>], word: &str) -> bool {
     names.iter().any(|n| &**n == word)
 }
 
-fn arg_suggestions(arg: &Arg) -> Vec<Suggestion> {
-    arg.suggestions
+fn arg_suggestions(cx: &Ctx, arg: &Arg, current: &str) -> Vec<Suggestion> {
+    let mut out: Vec<Suggestion> = arg
+        .suggestions
         .iter()
         .flat_map(|s| match s {
             SuggestionSpec::Name(n) => vec![suggestion(n, None, None)],
@@ -238,6 +253,41 @@ fn arg_suggestions(arg: &Arg) -> Vec<Suggestion> {
                 .collect(),
             SuggestionSpec::Full(_) => vec![],
         })
+        .collect();
+    for t in &arg.template {
+        out.extend(template_suggestions(cx, t, current));
+    }
+    for g in &arg.generators {
+        for t in &g.template {
+            out.extend(template_suggestions(cx, t, current));
+        }
+        if let Some((gens, notify)) = cx.gens {
+            let (items, running) = gens.get(g, cx.dir, notify);
+            cx.pending.set(cx.pending.get() || running);
+            out.extend(
+                // Above files and static values, as Fig ranked them: a branch beats README.md.
+                items
+                    .iter()
+                    .flat_map(|i| i.iter())
+                    .map(|(n, d)| suggestion(n, Some(d), Some(75.0))),
+            );
+        }
+    }
+    out
+}
+
+fn template_suggestions(cx: &Ctx, template: &str, current: &str) -> Vec<Suggestion> {
+    match template {
+        "filepaths" => file_suggestions(cx, current, false),
+        "folders" => file_suggestions(cx, current, true),
+        _ => vec![], // `history` and `help` templates: not supported
+    }
+}
+
+fn file_suggestions(cx: &Ctx, current: &str, folders_only: bool) -> Vec<Suggestion> {
+    generate::files(cx.dir, current, folders_only)
+        .into_iter()
+        .map(|(n, d): (String, String)| suggestion(&n, Some(&d), None))
         .collect()
 }
 
@@ -298,10 +348,19 @@ mod tests {
         if words.is_empty() {
             words.push(String::new());
         }
-        complete(&store(), &words)
-            .into_iter()
-            .map(|s| s.insert)
-            .collect()
+        let s = store();
+        complete(
+            &Ctx {
+                store: &s,
+                dir: env!("CARGO_MANIFEST_DIR"),
+                gens: None,
+                pending: Default::default(),
+            },
+            &words,
+        )
+        .into_iter()
+        .map(|s| s.insert)
+        .collect()
     }
 
     #[test]
@@ -341,7 +400,15 @@ mod tests {
     #[test]
     fn specs_load_lazily() {
         let s = store();
-        complete(&s, &["git".into(), "ch".into()]);
+        complete(
+            &Ctx {
+                store: &s,
+                dir: "",
+                gens: None,
+                pending: Default::default(),
+            },
+            &["git".into(), "ch".into()],
+        );
         assert_eq!(s.loaded_count(), 1);
     }
 
@@ -353,7 +420,12 @@ mod tests {
         let req = |line: &'static str| line.split(' ').map(String::from).collect::<Vec<_>>();
         let words = req("gi");
         let got = suggest(
-            &s,
+            &Ctx {
+                store: &s,
+                dir: "/r",
+                gens: None,
+                pending: Default::default(),
+            },
             &h,
             &Request {
                 dir: "/r",
@@ -366,7 +438,12 @@ mod tests {
         assert_eq!(got[1].insert, "git"); // used, so it beats `gibo`, which sorts first
         let words = req("git che");
         let got = suggest(
-            &s,
+            &Ctx {
+                store: &s,
+                dir: "/r",
+                gens: None,
+                pending: Default::default(),
+            },
             &h,
             &Request {
                 dir: "/r",
@@ -376,6 +453,47 @@ mod tests {
             },
         );
         assert_eq!(got[1].insert, "checkout"); // used, so it beats `check-attr` etc.
+    }
+
+    #[test]
+    fn files_for_specless_commands_and_templates() {
+        // Run from the repo root: `src/` exists there.
+        assert!(names("nosuchcmd sr").contains(&"src/".to_string()));
+        assert!(names("cat src/ma").contains(&"src/main.rs".to_string()));
+        assert!(names("cd sr").contains(&"src/".to_string()));
+    }
+
+    #[test]
+    fn generator_results_join_the_menu() {
+        let s = store();
+        let gens = Arc::new(Generators::default());
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let tx = std::sync::Mutex::new(tx);
+        let notify: Notify = Arc::new(move || {
+            let _ = tx.lock().unwrap().send(());
+        });
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let cx = Ctx {
+            store: &s,
+            dir,
+            gens: Some((&gens, &notify)),
+            pending: Cell::default(),
+        };
+        let words: Vec<String> = ["git", "checkout", ""].map(String::from).to_vec();
+        complete(&cx, &words); // starts `git branch` in the background
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Generator finished");
+        let branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+        let got: Vec<String> = complete(&cx, &words)
+            .into_iter()
+            .map(|s| s.insert)
+            .collect();
+        assert!(got.contains(&branch), "{branch} not in {got:?}");
     }
 
     #[test]
