@@ -52,10 +52,12 @@ pub const ALL: Sources = Sources {
 
 #[derive(Debug, PartialEq)]
 pub struct Suggestion {
-    /// Replaces the current word, or the whole line for a History Suggestion.
+    /// Replaces the current word, or the whole line for a History line (kind `l`).
     pub insert: String,
     pub description: String,
-    pub whole_line: bool,
+    /// `l` History line, `c` command or subcommand, `o` option, `a` fixed argument value,
+    /// `v` Generator value, `f` file, `d` folder. Themes colour by it.
+    pub kind: char,
     priority: f32,
     usage: f32,
 }
@@ -107,7 +109,7 @@ pub fn suggest(cx: &Ctx, history: &History, r: &Request) -> Vec<Suggestion> {
         .map(|(cmd, desc)| Suggestion {
             insert: cmd.to_string(),
             description: desc,
-            whole_line: true,
+            kind: 'l',
             priority: 0.0,
             usage: 0.0,
         });
@@ -150,7 +152,7 @@ fn commands(store: &Arc<Store>, current: &str) -> Vec<Suggestion> {
         .commands()
         .iter()
         .filter(|n| n.starts_with(current))
-        .map(|n| suggestion(n, None, None))
+        .map(|n| suggestion('c', n, None, None))
         .collect()
 }
 
@@ -224,7 +226,7 @@ fn walk<'a>(
             .filter(|o| !o.hidden && (o.repeatable() || !used.iter().any(|u| std::ptr::eq(*u, *o))))
             .flat_map(|o| {
                 o.name.iter().map(move |n| {
-                    suggestion(n, o.description.as_deref(), o.priority)
+                    suggestion('o', n, o.description.as_deref(), o.priority)
                         .with_insert(o.insert_value.as_deref())
                 })
             })
@@ -235,7 +237,7 @@ fn walk<'a>(
         for s in cmd.subcommands.iter().filter(|s| !s.hidden) {
             for n in &s.name {
                 out.push(
-                    suggestion(n, s.description.as_deref(), s.priority)
+                    suggestion('c', n, s.description.as_deref(), s.priority)
                         .with_insert(s.insert_value.as_deref()),
                 );
             }
@@ -286,12 +288,12 @@ fn arg_suggestions(cx: &Ctx, arg: &Arg, current: &str) -> Vec<Suggestion> {
         .suggestions
         .iter()
         .flat_map(|s| match s {
-            SuggestionSpec::Name(n) => vec![suggestion(n, None, None)],
+            SuggestionSpec::Name(n) => vec![suggestion('a', n, None, None)],
             SuggestionSpec::Full(f) if !f.hidden => f
                 .name
                 .iter()
                 .map(|n| {
-                    suggestion(n, f.description.as_deref(), f.priority)
+                    suggestion('a', n, f.description.as_deref(), f.priority)
                         .with_insert(f.insert_value.as_deref())
                 })
                 .collect(),
@@ -313,7 +315,7 @@ fn arg_suggestions(cx: &Ctx, arg: &Arg, current: &str) -> Vec<Suggestion> {
                 items
                     .iter()
                     .flat_map(|i| i.iter())
-                    .map(|(n, d)| suggestion(n, Some(d), Some(75.0))),
+                    .map(|(n, d)| suggestion('v', n, Some(d), Some(75.0))),
             );
         }
     }
@@ -334,11 +336,19 @@ fn template_suggestions(cx: &Ctx, template: &str, current: &str) -> Vec<Suggesti
 fn file_suggestions(cx: &Ctx, current: &str, folders_only: bool) -> Vec<Suggestion> {
     generate::files(cx.dir, current, folders_only)
         .into_iter()
-        .map(|(n, d): (String, String)| suggestion(&n, Some(&d), None))
+        .map(|(n, d): (String, String)| {
+            let kind = if n.ends_with('/') { 'd' } else { 'f' };
+            suggestion(kind, &n, Some(&d), None)
+        })
         .collect()
 }
 
-fn suggestion(name: &str, description: Option<&str>, priority: Option<f32>) -> Suggestion {
+fn suggestion(
+    kind: char,
+    name: &str,
+    description: Option<&str>,
+    priority: Option<f32>,
+) -> Suggestion {
     Suggestion {
         insert: name.to_string(),
         description: description
@@ -347,7 +357,7 @@ fn suggestion(name: &str, description: Option<&str>, priority: Option<f32>) -> S
             .next()
             .unwrap_or_default()
             .to_string(),
-        whole_line: false,
+        kind,
         priority: priority.unwrap_or(50.0),
         usage: 0.0,
     }
@@ -464,7 +474,7 @@ mod tests {
                 now: 200,
             },
         );
-        assert!(got[0].whole_line && got[0].insert == "git checkout main");
+        assert!(got[0].kind == 'l' && got[0].insert == "git checkout main");
         assert_eq!(got[1].insert, "git"); // used, so it beats `gibo`, which sorts first
         let words = req("git che");
         let got = suggest(
@@ -571,7 +581,7 @@ mod tests {
             ..ALL
         };
         let got = suggest(&Ctx::new(&s, "", only_history), &h, &r);
-        assert!(got.iter().all(|s| s.whole_line) && !got.is_empty());
+        assert!(got.iter().all(|s| s.kind == 'l') && !got.is_empty());
         let no_history = Sources {
             history: false,
             ..ALL
@@ -579,8 +589,25 @@ mod tests {
         assert!(
             suggest(&Ctx::new(&s, "", no_history), &h, &r)
                 .iter()
-                .all(|s| !s.whole_line)
+                .all(|s| s.kind != 'l')
         );
+    }
+
+    #[test]
+    fn kinds_tell_the_shell_what_each_suggestion_is() {
+        let s = store();
+        let cx = Ctx::new(&s, env!("CARGO_MANIFEST_DIR"), ALL);
+        let kinds = |l: &str| {
+            let words: Vec<String> = l.split(' ').map(String::from).collect();
+            complete(&cx, &words)
+                .into_iter()
+                .map(|s| (s.insert, s.kind))
+                .collect::<Vec<_>>()
+        };
+        assert!(kinds("git ch").contains(&("checkout".into(), 'c')));
+        assert!(kinds("git commit --am").contains(&("--amend".into(), 'o')));
+        assert!(kinds("cat sr").contains(&("src/".into(), 'd')));
+        assert!(kinds("cat Cargo.t").contains(&("Cargo.toml".into(), 'f')));
     }
 
     #[test]

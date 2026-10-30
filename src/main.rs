@@ -10,8 +10,8 @@
 //! Protocol: one request per line, fields separated by tabs. `dir`, `line` and `cmd` are escaped
 //! (`\\`, `\t`, `\n`); words have no tabs or newlines.
 //!   c <dir> <line> <word>...      complete; answered with `kind<TAB>insert<TAB>description` lines
-//!                                 (kind `w` replaces the current word, `l` the whole line), then
-//!                                 an empty line
+//!                                 (kind `l` replaces the whole line, any other kind the current
+//!                                 word; see `complete::Suggestion::kind`), then an empty line
 //!   r <time> <exit> <dir> <cmd>   record a command that just ran; no answer
 //!
 //! An answer ends with a `~` line before the empty line when a Generator is still running.
@@ -103,12 +103,7 @@ fn main() {
             };
             let cx = complete::Ctx::new(&state.store, r.dir, complete::ALL);
             for s in complete::suggest(&cx, &state.history.lock().unwrap(), &r) {
-                println!(
-                    "{}\t{}\t{}",
-                    if s.whole_line { 'l' } else { 'w' },
-                    s.insert,
-                    s.description
-                );
+                println!("{}\t{}\t{}", s.kind, s.insert, s.description);
             }
         }
         (Some("config"), Some("example")) => print!("{}", config::EXAMPLE),
@@ -285,7 +280,7 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
                 let mut resp = String::new();
                 for s in suggestions.into_iter().take(MAX_SUGGESTIONS) {
                     let clean = |t: &str| t.replace(['\t', '\n', '\r'], " ");
-                    let kind = if s.whole_line { 'l' } else { 'w' };
+                    let kind = s.kind;
                     resp.push_str(&format!(
                         "{kind}\t{}\t{}\n",
                         clean(&s.insert),

@@ -98,6 +98,24 @@ COLUMNS=120; FLICK_ALIGN=left
 type_line 'git ch'
 expect 'align = left starts at column 0' '[[ ${${(f)POSTDISPLAY}[2]} != " "* ]]'
 
+# Drawing: rows share one width (so a panel background is one block), long rows end in "…",
+# the typed part of each name gets the match style, and each kind its own colour.
+FLICK_STYLE_PANEL=bg=236 FLICK_STYLE_MATCH=underline FLICK_STYLE_OPTION=fg=3
+type_line 'git ch'
+() {
+  local -a rows=("${(@f)POSTDISPLAY}"); shift rows  # first line is Ghost text
+  local -A widths; local r; for r in $rows; do widths[${#r}]=1; done
+  expect 'Rows share one width'           '(( ${#widths} == 1 ))'
+  local hl=${(j:|:)region_highlight}
+  expect 'Typed part gets the match style' '[[ $hl == *"fg=6,underline,memo=flick"* || $hl == *"bg=236,fg=6,underline,memo=flick"* ]]'
+  expect 'Panel background on every row'  '(( ${#${(M)region_highlight:#*bg=236*}} >= 3 ))'
+}
+COLUMNS=50; type_line 'git ch'
+expect 'Cut-off rows end in …'            '[[ ${${(f)POSTDISPLAY}[3]} == *… && ${#${${(f)POSTDISPLAY}[3]}} == 49 ]]'
+COLUMNS=120; type_line 'git commit --a'  # several options; the first is selected, the rest coloured
+expect 'Options get the option colour'    '[[ ${(j:|:)region_highlight} == *"bg=236,fg=3"* ]]'
+FLICK_STYLE_PANEL= FLICK_STYLE_MATCH=bold FLICK_STYLE_OPTION=fg=3
+
 # A background process that can't start costs one wait, not one per keystroke.
 () {
   local FLICK_SOCK=/nonexistent-dir/flick.sock FLICK_FD= FLICK_RETRY_AT=0

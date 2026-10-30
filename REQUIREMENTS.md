@@ -86,7 +86,8 @@ Menu order: the best History line comes first, so it is also the Ghost text. The
 ### Customisation
 
 - **Config**: `~/.config/flick/config.toml`. `flick config example` prints every setting, and `flick config check` validates the file. A broken config falls back to defaults, with a one-line message in the shell.
-- **Themes**: colours, borders and icons only, never layout. The default Theme uses the terminal's own ANSI palette, so it follows light and dark mode. One alternative Theme ships with v1.
+- **Themes**: colours, borders and icons only, never layout. The default Theme uses the terminal's own ANSI palette, so it follows light and dark mode. `panel` (dark card, 24-bit colour) and `nerd` (icons) ship too.
+- The Menu is drawn as one block: every row is padded to the same width (cut-off text ends in `…`), so a Theme's `panel` background reads as a card. Names are coloured by kind (command, option, file, folder, Generator value, History line), and the typed part of each name gets the `match` style.
 - **User specs**: YAML files in `~/.config/flick/specs/`, using the same structure as converted Fig specs.
 
 ### Shell integration

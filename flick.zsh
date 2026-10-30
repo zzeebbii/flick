@@ -14,6 +14,7 @@ typeset -g FLICK_TRIGGER=typing FLICK_NATIVE=1 FLICK_CONFIG_ERROR=  # Trigger mo
 typeset -gi FLICK_ROWS=8
 typeset -g FLICK_ALIGN=left  # left | cursor: where the Menu starts
 typeset -g FLICK_STYLE_GHOST=fg=8 FLICK_STYLE_NAME=fg=6 FLICK_STYLE_DESC=fg=8 FLICK_STYLE_SELECTED=standout FLICK_STYLE_HISTORY=fg=5
+typeset -g FLICK_STYLE_OPTION=fg=3 FLICK_STYLE_FILE= FLICK_STYLE_FOLDER=fg=4 FLICK_STYLE_VALUE=fg=2 FLICK_STYLE_MATCH=bold FLICK_STYLE_PANEL=
 typeset -g FLICK_ICON_HISTORY= FLICK_ICON_COMMAND= FLICK_ICON_OPTION= FLICK_ICON_FILE= FLICK_ICON_FOLDER=
 typeset -g FLICK_KEY_ACCEPT='^I' FLICK_KEY_ACCEPT_GHOST='^[[C' FLICK_KEY_UP='^[[A' FLICK_KEY_DOWN='^[[B' FLICK_KEY_CLOSE='^['
 () {
@@ -147,6 +148,14 @@ _flick_clear() {
   region_highlight=(${region_highlight:#*memo=flick})
 }
 
+# Adds one highlight: $1 start, $2 end, then style parts joined with commas (empty ones skipped).
+# Later parts win where they set the same attribute, so the row style goes first.
+_flick_hl() {
+  (( $2 > $1 )) || return 0
+  local spec=${(j:,:)${(@)argv[3,-1]:#}}
+  region_highlight+=("$1 $2 ${spec:-none},memo=flick")
+}
+
 # Draws Ghost text and the Menu from the current Suggestions.
 _flick_render() {
   _flick_clear
@@ -165,19 +174,22 @@ _flick_render() {
   local -i namew=0 i
   for (( i = top; i < top + rows; i++ )); do (( namew = $#FLICK_INSERT[i] > namew ? $#FLICK_INSERT[i] : namew )); done
   (( namew = namew > 32 ? 32 : namew ))
-  local more= icon
-  local -a lines styles
+  local more= icon kind
+  local -a lines name_styles
   local -i iconw=0 widest=0
   [[ -n $FLICK_ICON_HISTORY$FLICK_ICON_COMMAND$FLICK_ICON_OPTION$FLICK_ICON_FILE$FLICK_ICON_FOLDER ]] && iconw=2
   (( n > rows )) && more=" ($FLICK_SEL/$n)"
   for (( i = top; i < top + rows; i++ )); do
-    icon= styles+=$FLICK_STYLE_NAME
-    if [[ ${FLICK_KIND[i]} == l ]]; then icon=$FLICK_ICON_HISTORY styles[-1]=$FLICK_STYLE_HISTORY
-    elif [[ ${FLICK_INSERT[i]} == -* ]]; then icon=$FLICK_ICON_OPTION
-    elif [[ ${FLICK_INSERT[i]} == */ ]]; then icon=$FLICK_ICON_FOLDER
-    elif [[ ${FLICK_DESC[i]} == File ]]; then icon=$FLICK_ICON_FILE
-    else icon=$FLICK_ICON_COMMAND
-    fi
+    kind=${FLICK_KIND[i]}
+    case $kind in
+      l) icon=$FLICK_ICON_HISTORY name_styles+=$FLICK_STYLE_HISTORY ;;
+      o) icon=$FLICK_ICON_OPTION  name_styles+=$FLICK_STYLE_OPTION ;;
+      d) icon=$FLICK_ICON_FOLDER  name_styles+=$FLICK_STYLE_FOLDER ;;
+      f) icon=$FLICK_ICON_FILE    name_styles+=$FLICK_STYLE_FILE ;;
+      v) icon=$FLICK_ICON_COMMAND name_styles+=$FLICK_STYLE_VALUE ;;
+      *) icon=$FLICK_ICON_COMMAND name_styles+=$FLICK_STYLE_NAME ;;
+    esac
+    [[ -n $name_styles[-1] ]] || name_styles[-1]=$FLICK_STYLE_NAME
     (( iconw )) && icon="${(r:1:)icon} " || icon=
     lines+="$icon${(r:namew:)FLICK_INSERT[i]}  ${FLICK_DESC[i]}"
     (( i == top )) && lines[-1]+=$more
@@ -195,16 +207,36 @@ _flick_render() {
     (( indent = indent > 0 ? indent : 0 ))
   fi
 
-  local row start pad=${(l:indent:)}
+  # Every row is padded to the same width, so a panel background reads as one block. Each row
+  # is drawn as separate, non-overlapping parts, each with its full style:
+  # icon and name, the typed part of the name (match), the rest of the name, the description.
+  local -i pw=$(( widest < width - indent ? widest : width - indent )) m start namestart descstart
+  local row pad=${(l:indent:)} base name_style
   for (( i = 1; i <= $#lines; i++ )); do
-    row=${lines[i][1,width-indent]}
+    row=$lines[i]
+    if (( $#row > pw )); then row="${row[1,pw-1]}…"; else row=${(r:pw:)row}; fi
     start=$(( s + $#POSTDISPLAY + 1 + indent ))
     POSTDISPLAY+=$'\n'$pad$row
+
+    typed=$FLICK_WORD
+    [[ ${FLICK_KIND[top+i-1]} == l ]] && typed=$LBUFFER
+    m=0
+    [[ -n $typed && ${(L)${FLICK_INSERT[top+i-1]}[1,$#typed]} == ${(L)typed} ]] && m=$#typed
+    (( m = m < namew ? m : namew ))
     if (( top + i - 1 == FLICK_SEL )); then
-      region_highlight+=("$start $(( start + $#row )) $FLICK_STYLE_SELECTED,memo=flick")
+      base=$FLICK_STYLE_SELECTED name_style=
     else
-      region_highlight+=("$start $(( start + iconw + namew )) ${styles[i]},memo=flick")
-      region_highlight+=("$(( start + iconw + namew )) $(( start + $#row )) $FLICK_STYLE_DESC,memo=flick")
+      base=$FLICK_STYLE_PANEL name_style=$name_styles[i]
+    fi
+    namestart=$(( start + iconw )) descstart=$(( start + iconw + namew ))
+    (( descstart = descstart < start + pw ? descstart : start + pw ))
+    _flick_hl $start $namestart $base $name_style
+    _flick_hl $namestart $(( namestart + m )) $base $name_style $FLICK_STYLE_MATCH
+    _flick_hl $(( namestart + m )) $descstart $base $name_style
+    if (( top + i - 1 == FLICK_SEL )); then
+      _flick_hl $descstart $(( start + pw )) $base
+    else
+      _flick_hl $descstart $(( start + pw )) $base $FLICK_STYLE_DESC
     fi
   done
   FLICK_OPEN=1

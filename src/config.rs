@@ -8,7 +8,8 @@ pub const EXAMPLE: &str = r#"# flick config. Every key is optional; these are th
 trigger = "typing"   # "typing": the Menu opens as you type. "tab": only when you press Tab.
 rows = 8             # Menu rows (1-20)
 align = "left"       # "left": the Menu starts at the left edge. "cursor": under the word being typed.
-theme = "default"    # "default", "nerd" (needs a Nerd Font), or a file in themes/<name>.toml
+theme = "default"    # "default", "panel" (dark card, 24-bit colour), "nerd" (icons; needs a
+                     # Nerd Font), or a file in themes/<name>.toml
 preset = "all"       # "all", "history-only" or "specs-only"
 
 # Turn single Sources on or off; overrides the preset.
@@ -94,12 +95,26 @@ pub struct Sources {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct Theme {
-    /// zsh highlight specs (`fg=8`, `bold`, `standout`, ...), as in `region_highlight`.
+    /// zsh highlight specs, as in `region_highlight`: `fg=` / `bg=` with a colour name, a
+    /// 0-255 palette number or `#rrggbb`, plus `bold`, `underline`, `standout`.
     pub ghost: String,
+    /// Names of commands, subcommands and fixed values.
     pub name: String,
     pub description: String,
+    /// The whole selected row.
     pub selected: String,
+    /// Names of History lines.
     pub history: String,
+    pub option: String,
+    pub file: String,
+    pub folder: String,
+    /// Values from Generators: branches, containers, scripts, ...
+    pub value: String,
+    /// The part of each name that matches what was typed, on top of the row's style.
+    #[serde(rename = "match")]
+    pub matched: String,
+    /// Background of the whole Menu, e.g. `bg=#1f2335`; empty for none.
+    pub panel: String,
     pub icons: Icons,
 }
 
@@ -170,6 +185,12 @@ impl Default for Theme {
             description: "fg=8".into(),
             selected: "standout".into(),
             history: "fg=5".into(),
+            option: "fg=3".into(),
+            file: String::new(),
+            folder: "fg=4".into(),
+            value: "fg=2".into(),
+            matched: "bold".into(),
+            panel: String::new(),
             icons: Icons::default(),
         }
     }
@@ -191,6 +212,21 @@ impl Theme {
                     folder: "\u{f07b}".into(),
                 },
                 ..Theme::default()
+            }),
+            // A dark card on a 24-bit colour terminal, like a popup.
+            "panel" => Some(Theme {
+                ghost: "fg=#565f89".into(),
+                name: "fg=#7aa2f7".into(),
+                description: "fg=#737aa2".into(),
+                selected: "fg=#1a1b26,bg=#7aa2f7".into(),
+                history: "fg=#bb9af7".into(),
+                option: "fg=#e0af68".into(),
+                file: "fg=#c0caf5".into(),
+                folder: "fg=#7dcfff".into(),
+                value: "fg=#9ece6a".into(),
+                matched: "bold,underline".into(),
+                panel: "bg=#1f2335".into(),
+                icons: Icons::default(),
             }),
             _ => None,
         }
@@ -304,6 +340,12 @@ pub fn to_zsh(c: &Config, t: &Theme, error: Option<&str>) -> String {
         ("FLICK_STYLE_DESC", &t.description),
         ("FLICK_STYLE_SELECTED", &t.selected),
         ("FLICK_STYLE_HISTORY", &t.history),
+        ("FLICK_STYLE_OPTION", &t.option),
+        ("FLICK_STYLE_FILE", &t.file),
+        ("FLICK_STYLE_FOLDER", &t.folder),
+        ("FLICK_STYLE_VALUE", &t.value),
+        ("FLICK_STYLE_MATCH", &t.matched),
+        ("FLICK_STYLE_PANEL", &t.panel),
         ("FLICK_ICON_HISTORY", &t.icons.history),
         ("FLICK_ICON_COMMAND", &t.icons.command),
         ("FLICK_ICON_OPTION", &t.icons.option),
@@ -373,8 +415,14 @@ mod tests {
     }
 
     #[test]
-    fn nerd_theme_has_icons() {
+    fn builtin_themes() {
         assert!(!Theme::builtin("nerd").unwrap().icons.folder.is_empty());
+        assert!(Theme::builtin("panel").unwrap().panel.starts_with("bg=#"));
+        let t: Theme = toml::from_str("match = \"underline\"\npanel = \"bg=236\"").unwrap();
+        assert_eq!(
+            (t.matched.as_str(), t.panel.as_str(), t.option.as_str()),
+            ("underline", "bg=236", "fg=3")
+        );
         assert!(Theme::builtin("nope").is_none());
     }
 }

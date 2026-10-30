@@ -22,7 +22,10 @@ flick config example > ~/.config/flick/config.toml   # every setting, commented,
 flick config check                                   # validate after editing
 ```
 
-- **Themes**: `theme = "default"` (your terminal's colours) or `"nerd"` (icons; needs a Nerd Font). For your own, put a file in `~/.config/flick/themes/<name>.toml` with any of `ghost`, `name`, `description`, `selected`, `history` (zsh highlight specs such as `fg=6,bold`) and an `[icons]` table (`history`, `command`, `option`, `file`, `folder`).
+- **Themes**: `theme = "default"` (your terminal's colours), `"panel"` (a dark card, like a popup; needs 24-bit colour, which iTerm and Ghostty have) or `"nerd"` (icons; needs a Nerd Font).
+  - For your own, put a file in `~/.config/flick/themes/<name>.toml`. Any key you leave out keeps the default Theme's value.
+  - Each value is a zsh highlight spec: `fg=` / `bg=` with a colour name, a 0–255 number or `#rrggbb`, plus `bold`, `underline` or `standout`, comma-separated (e.g. `fg=#7aa2f7,bold`).
+  - Keys: `ghost`, `name` (commands, subcommands, fixed values), `option`, `file`, `folder`, `value` (Generator results such as branches), `history`, `description`, `selected` (the whole selected row), `match` (the typed part of each name), `panel` (background of the whole Menu), and an `[icons]` table (`history`, `command`, `option`, `file`, `folder`).
 - **User specs**: put `<cli>.yaml` (or `.json`) in `~/.config/flick/specs/`. These use the same structure as `specs/` (see `specs/README.md`) and replace a shipped Spec of the same name.
 
 New shells pick up changes; the background process re-reads `config.toml` as soon as it changes.
