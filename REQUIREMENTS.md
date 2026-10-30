@@ -54,7 +54,7 @@ Every change is measured against these with `flick bench`. They are targets, to 
 
 - flick keeps its own History. Each History entry stores the command, directory, exit code and timestamp.
 - On first run, flick imports `~/.zsh_history` once. Imported entries have no directory or exit code.
-- flick never records commands that start with a space, or commands matching configurable patterns. The defaults are patterns containing `password`, `TOKEN=` and `SECRET`.
+- flick never records commands that start with a space, or commands matching configurable patterns. The defaults are `password`, `token=`, `secret`, `authorization:`, `bearer `, `ghp_`, `github_pat_` and `aiza` (case-insensitive). The patterns are also applied when History is loaded, so a newly added pattern hides older entries too.
 - Nothing leaves the machine. No telemetry.
 
 ### Ranking

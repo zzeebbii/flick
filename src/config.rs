@@ -19,7 +19,8 @@ preset = "all"       # "all", "history-only" or "specs-only"
 # native = true      # Tab hands over to zsh's own completion when flick has nothing
 
 [history]
-ignore = ["password", "token=", "secret"]   # never recorded (case-insensitive substrings)
+# Never recorded (case-insensitive substrings). Also applied when History is loaded.
+ignore = ["password", "token=", "secret", "authorization:", "bearer ", "ghp_", "github_pat_", "aiza"]
 
 [generators]
 disable = []         # CLIs whose Generators never run, e.g. ["aws", "gcloud"] to avoid network calls
@@ -127,8 +128,20 @@ impl Default for Config {
 
 impl Default for HistoryConfig {
     fn default() -> Self {
+        // Also common credential shapes: GitHub tokens (ghp_, github_pat_), Google API keys
+        // (AIza...), HTTP auth headers.
+        let patterns = [
+            "password",
+            "token=",
+            "secret",
+            "authorization:",
+            "bearer ",
+            "ghp_",
+            "github_pat_",
+            "aiza",
+        ];
         HistoryConfig {
-            ignore: vec!["password".into(), "token=".into(), "secret".into()],
+            ignore: patterns.map(String::from).to_vec(),
         }
     }
 }

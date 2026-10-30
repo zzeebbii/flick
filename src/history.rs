@@ -68,6 +68,8 @@ impl History {
                     unescape(cmd),
                 ));
             }
+            // A pattern added to `[history] ignore` later also hides what was recorded before it.
+            rows.retain(|r| h.recordable(&r.3));
             // Sorted by command, every `add` appends instead of inserting in the middle.
             rows.sort_by(|a, b| a.3.trim_end().cmp(b.3.trim_end()));
             for (t, exit, dir, cmd) in rows {
@@ -338,6 +340,13 @@ mod tests {
             (1, Some(0), "", " secret-ish"),
             (1, Some(0), "", "export API_TOKEN=x"),
             (1, Some(0), "", "mysql --password=x"),
+            (
+                1,
+                Some(0),
+                "",
+                "curl -H 'Authorization: Bearer abc' https://api.github.com",
+            ),
+            (1, Some(0), "", "gh auth login --with-token ghp_abc123"),
         ]);
         assert!(h.entries.is_empty());
     }
