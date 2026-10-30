@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// What completing needs besides the words: the Specs, the directory, and Generators
 /// (absent in tests and `flick complete`, where nothing runs in the background).
 pub struct Ctx<'a> {
-    pub store: &'a Store,
+    pub store: &'a Arc<Store>,
     pub dir: &'a str,
     pub gens: Option<(&'a Arc<Generators>, &'a Notify)>,
     /// Set when a Generator is still running for this request.
@@ -85,8 +85,8 @@ pub fn complete(cx: &Ctx, words: &[String]) -> Vec<Suggestion> {
         None => commands(cx.store, current),
         Some((cmd, rest)) => match cx.store.get(cmd) {
             Some(spec) => walk(cx, &spec, rest, current, vec![]),
-            // No Spec: offer files, the usual argument (Native completion replaces this in step 5).
-            None => file_suggestions(cx, current, false),
+            // No Spec: nothing here, so Tab hands over to zsh's own completion (Native completion).
+            None => vec![],
         },
     };
     rank(&mut out, current);
@@ -101,9 +101,9 @@ fn is_assignment(w: &str) -> bool {
     })
 }
 
-fn commands(store: &Store, current: &str) -> Vec<Suggestion> {
+fn commands(store: &Arc<Store>, current: &str) -> Vec<Suggestion> {
     store
-        .names
+        .commands()
         .iter()
         .filter(|n| n.starts_with(current))
         .map(|n| suggestion(n, None, None))
@@ -339,8 +339,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn store() -> Store {
-        Store::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("specs"))
+    fn store() -> Arc<Store> {
+        Arc::new(Store::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("specs"),
+        ))
     }
 
     fn names(line: &str) -> Vec<String> {
@@ -366,6 +368,7 @@ mod tests {
     #[test]
     fn command_names() {
         assert!(names("gi").contains(&"git".to_string()));
+        assert!(names("l").contains(&"ls".to_string())); // no Spec needed: it's on PATH
     }
 
     #[test]
@@ -458,7 +461,7 @@ mod tests {
     #[test]
     fn files_for_specless_commands_and_templates() {
         // Run from the repo root: `src/` exists there.
-        assert!(names("nosuchcmd sr").contains(&"src/".to_string()));
+        assert!(names("nosuchcmd sr").is_empty()); // left to Native completion
         assert!(names("cat src/ma").contains(&"src/main.rs".to_string()));
         assert!(names("cd sr").contains(&"src/".to_string()));
     }

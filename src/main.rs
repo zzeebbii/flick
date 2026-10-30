@@ -33,7 +33,7 @@ const MAX_SUGGESTIONS: usize = 50;
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 
 struct State {
-    store: spec::Store,
+    store: Arc<spec::Store>,
     history: Mutex<History>,
     gens: Arc<generate::Generators>,
 }
@@ -41,7 +41,7 @@ struct State {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let state = State {
-        store: spec::Store::new(specs_dir()),
+        store: Arc::new(spec::Store::new(specs_dir())),
         history: Mutex::new(History::open(&history_path(), Some(&zsh_history_path()))),
         gens: Arc::default(),
     };

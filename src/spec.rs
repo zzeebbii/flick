@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 /// Specs not used for this long are dropped from memory.
 const EVICT_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How often the list of commands on PATH is re-read.
+const PATH_REFRESH: Duration = Duration::from_secs(5 * 60);
 
 fn one_or_many<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
     #[derive(Deserialize)]
@@ -183,6 +185,7 @@ pub struct Store {
     /// CLI names that have a top-level Spec, sorted.
     pub names: Vec<String>,
     loaded: Mutex<HashMap<String, (Arc<Subcommand>, Instant)>>,
+    commands: Mutex<Option<(Instant, Arc<Vec<String>>)>>,
 }
 
 impl Store {
@@ -203,6 +206,7 @@ impl Store {
             dir,
             names,
             loaded: Mutex::default(),
+            commands: Mutex::default(),
         }
     }
 
@@ -222,6 +226,48 @@ impl Store {
         let spec: Arc<Subcommand> = Arc::new(serde_json::from_slice(&bytes).ok()?);
         loaded.insert(path.to_string(), (Arc::clone(&spec), now));
         Some(spec)
+    }
+
+    /// Every command name: CLIs with a Spec plus executables on `PATH`, sorted. Re-read in the
+    /// background when stale, so no keystroke pays for scanning PATH after the first.
+    pub fn commands(self: &Arc<Self>) -> Arc<Vec<String>> {
+        let mut cached = self.commands.lock().unwrap();
+        match &mut *cached {
+            Some((at, list)) => {
+                if at.elapsed() >= PATH_REFRESH {
+                    *at = Instant::now(); // one refresh at a time
+                    let this = Arc::clone(self);
+                    std::thread::spawn(move || {
+                        let fresh = Arc::new(this.scan_commands());
+                        *this.commands.lock().unwrap() = Some((Instant::now(), fresh));
+                    });
+                }
+                Arc::clone(list)
+            }
+            None => {
+                let list = Arc::new(self.scan_commands());
+                *cached = Some((Instant::now(), Arc::clone(&list)));
+                list
+            }
+        }
+    }
+
+    fn scan_commands(&self) -> Vec<String> {
+        use std::os::unix::fs::PermissionsExt;
+        let mut all = self.names.clone();
+        for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let executable = e
+                    .metadata()
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+                if let (true, Some(name)) = (executable, e.file_name().to_str()) {
+                    all.push(name.to_string());
+                }
+            }
+        }
+        all.sort();
+        all.dedup();
+        all
     }
 
     #[cfg(test)]

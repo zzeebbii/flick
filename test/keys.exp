@@ -44,6 +44,12 @@ check "Tab twice builds a command"   [list "dock" "\t" "bu" "\t"]   "docker buil
 # The previous line lingers in history as "#docker build ", so Up with the Menu closed recalls it.
 check "Up recalls history when closed" [list "\x1b\[A"]           "#docker build "
 
+# Native completion: a command with no Spec but a zsh completion function gets it on Tab.
+send "autoload -Uz compinit; compinit -u -D; _mytool() { compadd alpha beta }; compdef _mytool mytool\r"
+expect "PROMPT> "
+# (zsh's own space after a completion is auto-removed by the Ctrl-A that captures the line.)
+check "Tab hands over to Native completion" [list "mytool al" "\t"] "mytool alpha"
+
 # Generators: the branch list arrives in the background and is drawn without another keystroke,
 # so Right can take it.
 exec git init -q $tmp/repo

@@ -38,7 +38,8 @@ Every change is measured against these with `flick bench`. They are targets, to 
 
 - All five Sources, each switchable on or off and weighted in config: **Spec**, **Generator**, **Files**, **History**, **Native completion**.
 - **Presets** for common combinations, at least `all` and `history-only`.
-- **Native completion** is used for CLIs with no Spec, and wherever a Spec needs code flick doesn't run.
+- **Native completion** is used for CLIs with no Spec, and wherever a Spec needs code flick doesn't run. When flick has nothing to suggest, Tab hands over to whatever Tab did before flick loaded (zsh's own completion, fzf-tab, ...), drawn by zsh itself. Showing Native completion results inside flick's Menu (capturing them as fzf-tab does) is deferred (Q32).
+- At the command position, every executable on `PATH` is a Suggestion, alongside CLIs that have a Spec.
 
 ### Generators
 

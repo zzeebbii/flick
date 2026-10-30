@@ -19,6 +19,10 @@ typeset -g FLICK_LAST=               # LBUFFER the Suggestions were made for
 typeset -gi FLICK_NO_GHOST=0         # zsh-autosuggestions owns Ghost text
 typeset -g FLICK_CMD=                # command line now running, for History
 typeset -gi FLICK_WATCHING=0         # zle -F handler installed on FLICK_FD
+# Whatever Tab did before flick (expand-or-complete, fzf-tab, ...): Native completion, used
+# when flick has nothing to suggest.
+typeset -g FLICK_NATIVE_TAB=${${(z)"$(bindkey '^I')"}[2]:-expand-or-complete}  # `"^I" widget`
+[[ $FLICK_NATIVE_TAB == (_flick_tab|undefined-key) ]] && FLICK_NATIVE_TAB=expand-or-complete  # sourced twice
 
 _flick_connect() {
   [[ -n $FLICK_FD ]] && return 0
@@ -201,14 +205,16 @@ _flick_precmd() {
 _flick_down() { (( FLICK_OPEN )) && _flick_move +1 || zle .down-line-or-history }
 _flick_up()   { (( FLICK_OPEN )) && _flick_move -1 || zle .up-line-or-history }
 _flick_esc()  { _flick_clear }
-# Tab: take the selected Suggestion. With the Menu closed, open it; with nothing to suggest, complete as usual.
+# Tab: take the selected Suggestion. With the Menu closed, open it; with nothing to suggest,
+# hand over to Native completion.
 _flick_tab() {
   if (( $#FLICK_INSERT )) && [[ -n $POSTDISPLAY ]]; then  # Menu or Ghost text is showing
     _flick_take ' '; FLICK_LAST=; _flick_query && _flick_render
   elif _flick_query && (( $#FLICK_INSERT )); then
     _flick_render
   else
-    zle expand-or-complete
+    _flick_clear
+    zle $FLICK_NATIVE_TAB
   fi
 }
 # Right arrow: take the Ghost text. Otherwise move right as usual.
