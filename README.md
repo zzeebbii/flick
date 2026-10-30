@@ -2,13 +2,15 @@
 
 A fast zsh autocomplete for macOS and Linux that replaces Fig. See [REQUIREMENTS.md](REQUIREMENTS.md) and [GLOSSARY.md](GLOSSARY.md).
 
-## Try it
+## Install (from this repo)
 
 ```sh
 cargo build --release
-zsh -f                        # a clean shell; zsh-autosuggestions would clash
-source ./flick.zsh
+ln -s "$PWD/target/release/flick" ~/.local/bin/flick   # the `flick` command; any directory on PATH works
+echo "source $PWD/flick.zsh" >> ~/.zshrc               # near the end; remove zsh-autosuggestions from plugins
 ```
+
+To try it without touching `.zshrc`: `zsh -f`, then `source ./flick.zsh`.
 
 Type `git ch`: ↑/↓ choose a Suggestion, Tab takes it (plus a space), → takes the Ghost text, Esc closes the Menu.
 

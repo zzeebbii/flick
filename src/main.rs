@@ -117,6 +117,13 @@ fn main() {
             let loaded = Config::load(&path).and_then(|c| c.theme().map(|t| (c, t)));
             if what == "check" {
                 match loaded {
+                    Ok((c, _)) if !path.exists() => {
+                        println!(
+                            "{}: no file yet, using defaults (`flick config example` prints one)",
+                            path.display()
+                        );
+                        println!("Sources: {:?}", c.sources());
+                    }
                     Ok((c, _)) => println!("{}: ok\nSources: {:?}", path.display(), c.sources()),
                     Err(e) => {
                         eprintln!("{e}");
