@@ -6,6 +6,7 @@ emulate -L zsh
 root=${0:A:h:h}
 tmp=$(mktemp -d)
 trap 'pkill -f "flick serve $tmp/s.sock"; rm -rf $tmp' EXIT
+export FLICK_HISTORY=$tmp/history.tsv FLICK_HISTFILE=$tmp/none  # never touch the real History
 source $root/flick.zsh
 FLICK_SOCK=$tmp/s.sock
 alias gco='git checkout'
@@ -64,5 +65,23 @@ expect "Newline in a word doesn't desync answers" '[[ $POSTDISPLAY == eckout$'"'
 FLICK_NO_GHOST=1; type_line 'git ch'
 expect 'No Ghost text when zsh-autosuggestions is loaded' '[[ $POSTDISPLAY == $'"'\n'"'* ]]'
 FLICK_NO_GHOST=0
+
+# History: a recorded command leads the Menu as a whole line and becomes the Ghost text.
+FLICK_CMD='git checkout main'; true; _flick_precmd
+FLICK_CMD='git checkout main'; true; _flick_precmd
+FLICK_CMD='git checkout broken'; false; _flick_precmd
+type_line 'git ch'
+expect 'History line leads the Menu'      '[[ ${FLICK_KIND[1]} == l && ${FLICK_INSERT[1]} == "git checkout main" ]]'
+expect 'Ghost text completes the line'    '[[ $POSTDISPLAY == "eckout main"$'"'\n'"'* ]]'
+expect 'Only-failed command left out'     '(( ! ${FLICK_INSERT[(I)git checkout broken]} ))'
+_flick_right
+expect 'Right takes the whole line'       '[[ $LBUFFER == "git checkout main" ]]'
+type_line 'gi'
+expect 'Used command outranks the alphabet' '[[ ${FLICK_INSERT[2]} == git ]]'
+FLICK_CMD=' git push --secret'; true; _flick_precmd
+type_line 'git pu'
+expect 'Leading space is not recorded'    '[[ ${FLICK_KIND[1]} != l ]]'
+grep -q "git checkout main" $FLICK_HISTORY
+expect 'History is written to disk'       '(( $? == 0 ))'
 
 exit $fails

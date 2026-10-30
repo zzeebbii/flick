@@ -1,12 +1,63 @@
-//! Turns the words of the command being typed into Suggestions by walking its Spec.
+//! Turns the line being typed into Suggestions: Spec walking for the current word, History for
+//! the whole line, one ranking for both.
+use crate::history::History;
 use crate::spec::{Arg, LoadSpec, Opt, Store, Subcommand, SuggestionSpec};
 
 #[derive(Debug, PartialEq)]
 pub struct Suggestion {
-    /// Text that replaces the current word.
+    /// Replaces the current word, or the whole line for a History Suggestion.
     pub insert: String,
     pub description: String,
+    pub whole_line: bool,
     priority: f32,
+    usage: f32,
+}
+
+pub struct Request<'a> {
+    pub dir: &'a str,
+    /// Everything left of the cursor, as typed.
+    pub line: &'a str,
+    /// Words of the current command (see `complete`).
+    pub words: &'a [String],
+    pub now: u64,
+}
+
+/// History lines shown in the Menu, after the best one at the top.
+const EXTRA_LINES: usize = 3;
+
+/// The Menu, in order. The best History line (if any) comes first, so it is also the Ghost
+/// text; then Spec Suggestions ordered by how much the user has used each; then a few more
+/// History lines.
+pub fn suggest(store: &Store, history: &History, r: &Request) -> Vec<Suggestion> {
+    let mut words = complete(store, r.words);
+    let typed: Vec<&str> = r
+        .words
+        .iter()
+        .map(String::as_str)
+        .skip_while(|w| is_assignment(w))
+        .collect();
+    let before = typed[..typed.len().saturating_sub(1)].join(" ");
+    for s in &mut words {
+        let line = if before.is_empty() {
+            s.insert.clone()
+        } else {
+            format!("{before} {}", s.insert)
+        };
+        s.usage = history.usage(&line, r.dir, r.now);
+    }
+    words.sort_by(|a, b| b.usage.total_cmp(&a.usage)); // stable: ties keep Spec order
+
+    let mut lines = history
+        .lines(r.line, r.dir, r.now, 1 + EXTRA_LINES)
+        .into_iter()
+        .map(|(cmd, desc)| Suggestion {
+            insert: cmd.to_string(),
+            description: desc,
+            whole_line: true,
+            priority: 0.0,
+            usage: 0.0,
+        });
+    lines.next().into_iter().chain(words).chain(lines).collect()
 }
 
 /// `words` are the words of the current command, already alias-expanded by the shell.
@@ -199,7 +250,9 @@ fn suggestion(name: &str, description: Option<&str>, priority: Option<f32>) -> S
             .next()
             .unwrap_or_default()
             .to_string(),
+        whole_line: false,
         priority: priority.unwrap_or(50.0),
+        usage: 0.0,
     }
 }
 
@@ -290,6 +343,39 @@ mod tests {
         let s = store();
         complete(&s, &["git".into(), "ch".into()]);
         assert_eq!(s.loaded_count(), 1);
+    }
+
+    #[test]
+    fn history_ranks_words_and_leads_with_a_line() {
+        let s = store();
+        let mut h = History::default();
+        h.record(100, Some(0), "/r", "git checkout main");
+        let req = |line: &'static str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        let words = req("gi");
+        let got = suggest(
+            &s,
+            &h,
+            &Request {
+                dir: "/r",
+                line: "gi",
+                words: &words,
+                now: 200,
+            },
+        );
+        assert!(got[0].whole_line && got[0].insert == "git checkout main");
+        assert_eq!(got[1].insert, "git"); // used, so it beats `gibo`, which sorts first
+        let words = req("git che");
+        let got = suggest(
+            &s,
+            &h,
+            &Request {
+                dir: "/r",
+                line: "git che",
+                words: &words,
+                now: 200,
+            },
+        );
+        assert_eq!(got[1].insert, "checkout"); // used, so it beats `check-attr` etc.
     }
 
     #[test]

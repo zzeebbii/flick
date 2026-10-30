@@ -6,6 +6,9 @@
 # a comment (nothing runs) and zshaddhistory writes it to a file.
 set root [file dirname [file dirname [file normalize [info script]]]]
 set tmp [exec mktemp -d]
+# Never touch the real History.
+set env(FLICK_HISTORY) $tmp/history.tsv
+set env(FLICK_HISTFILE) $tmp/none
 set timeout 5
 log_user 0
 spawn -noecho zsh -f -i

@@ -1,7 +1,7 @@
 # flick: zsh side. Source this from .zshrc after oh-my-zsh/compinit, before zsh-syntax-highlighting.
 # Must print nothing at startup (p10k instant prompt).
-zmodload zsh/net/socket zsh/zselect 2>/dev/null || return
-autoload -Uz add-zle-hook-widget
+zmodload zsh/net/socket zsh/zselect zsh/datetime 2>/dev/null || return
+autoload -Uz add-zle-hook-widget add-zsh-hook
 
 typeset -g FLICK_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/flick-$UID.sock
 typeset -g FLICK_BIN=${0:A:h}/target/release/flick
@@ -10,18 +10,19 @@ typeset -g FLICK_TRIGGER=${FLICK_TRIGGER:-typing}  # typing | tab (Trigger mode)
 typeset -gi FLICK_ROWS=${FLICK_ROWS:-8}
 
 typeset -g FLICK_FD=
-typeset -ga FLICK_INSERT FLICK_DESC  # current Suggestions
+typeset -ga FLICK_KIND FLICK_INSERT FLICK_DESC  # current Suggestions; kind w = word, l = whole line
 typeset -g FLICK_WORD=               # the word they replace
 typeset -gi FLICK_SEL=1              # selected Suggestion
 typeset -gi FLICK_OPEN=0             # Menu is showing
 typeset -g FLICK_LAST=               # LBUFFER the Suggestions were made for
 typeset -gi FLICK_NO_GHOST=0         # zsh-autosuggestions owns Ghost text
+typeset -g FLICK_CMD=                # command line now running, for History
 
 _flick_connect() {
   [[ -n $FLICK_FD ]] && return 0
   if ! zsocket $FLICK_SOCK 2>/dev/null; then
     [[ -n $FLICK_BIN ]] || return 1
-    $FLICK_BIN serve $FLICK_SOCK &>/dev/null &!
+    FLICK_HISTFILE=${FLICK_HISTFILE:-$HISTFILE} $FLICK_BIN serve $FLICK_SOCK &>/dev/null &!
     # Only the first keystroke after flick starts pays this; it is up in a few ms.
     local i
     for i in {1..10}; do
@@ -46,20 +47,32 @@ _flick_words() {
   reply=("${(@Q)words}")
 }
 
+# Escapes \, tab and newline so a value fits in one protocol field. Result in REPLY.
+_flick_escape() { REPLY=${${${1//\\/\\\\}//$'\t'/\\t}//$'\n'/\\n} }
+
+# Sends one request line; reconnects once if the background process went away.
+_flick_send() {
+  _flick_connect || return 1
+  print -r -u $FLICK_FD -- $1 2>/dev/null && return 0
+  exec {FLICK_FD}>&-; FLICK_FD=
+  _flick_connect && print -r -u $FLICK_FD -- $1 2>/dev/null
+}
+
 # Asks the background process for Suggestions for LBUFFER.
 _flick_query() {
-  FLICK_INSERT=() FLICK_DESC=() FLICK_SEL=1 FLICK_LAST=$LBUFFER
-  _flick_connect || return 1
+  FLICK_KIND=() FLICK_INSERT=() FLICK_DESC=() FLICK_SEL=1 FLICK_LAST=$LBUFFER
   local -a reply; _flick_words
   FLICK_WORD=${reply[-1]}
   # One request per line: tabs and newlines inside words (e.g. from $'\n') must not leak.
   # Quoted with (@) so the empty word after a trailing space survives.
   reply=("${(@)reply//[$'\t\n']/ }")
-  if ! print -r -u $FLICK_FD -- ${(pj:\t:)reply} 2>/dev/null; then
-    exec {FLICK_FD}>&-; FLICK_FD=; return 1
-  fi
-  local line
+  local REPLY dir line
+  _flick_escape $PWD; dir=$REPLY
+  _flick_escape $LBUFFER
+  _flick_send "c"$'\t'$dir$'\t'$REPLY$'\t'${(pj:\t:)reply} || return 1
   while IFS= read -r -u $FLICK_FD line && [[ -n $line ]]; do
+    FLICK_KIND+=${line[1]}
+    line=${line[3,-1]}
     FLICK_INSERT+=${line%%$'\t'*} FLICK_DESC+=${line#*$'\t'}
   done
 }
@@ -74,8 +87,9 @@ _flick_clear() {
 _flick_render() {
   _flick_clear
   (( $#FLICK_INSERT )) && (( CURSOR == $#BUFFER )) || return
-  local pick=${FLICK_INSERT[FLICK_SEL]} ghost=
-  (( FLICK_NO_GHOST )) || [[ $pick != ${FLICK_WORD}* ]] || ghost=${pick#$FLICK_WORD}
+  local pick=${FLICK_INSERT[FLICK_SEL]} ghost= typed=$FLICK_WORD
+  [[ ${FLICK_KIND[FLICK_SEL]} == l ]] && typed=$LBUFFER
+  (( FLICK_NO_GHOST )) || [[ $pick != ${typed}* ]] || ghost=${pick#$typed}
   local s=$#BUFFER
   POSTDISPLAY=$ghost
   region_highlight+=("$s $(( s + $#ghost )) fg=8,memo=flick")
@@ -105,9 +119,14 @@ _flick_render() {
   FLICK_OPEN=1
 }
 
-# Replaces the word being typed with the selected Suggestion. $1 = suffix to add.
+# Replaces the word being typed (or the whole line, for History) with the selected Suggestion.
+# $1 = suffix to add after a word.
 _flick_take() {
   local pick=${FLICK_INSERT[FLICK_SEL]}
+  if [[ ${FLICK_KIND[FLICK_SEL]} == l ]]; then
+    LBUFFER=$pick
+    return
+  fi
   LBUFFER=${LBUFFER%$FLICK_WORD}$pick
   [[ -n $1 && $pick != *[/=:] ]] && LBUFFER+=$1
 }
@@ -133,6 +152,19 @@ _flick_pre_redraw() {
 
 _flick_line_finish() { _flick_clear; FLICK_INSERT=() FLICK_LAST= }
 
+# History: remember the command when it starts, record it with its exit code when it ends.
+_flick_preexec() { FLICK_CMD=$1 }
+_flick_precmd() {
+  local exit=$?
+  [[ -n $FLICK_CMD ]] || return 0
+  local REPLY dir
+  _flick_escape $PWD; dir=$REPLY
+  _flick_escape $FLICK_CMD
+  _flick_send "r"$'\t'$EPOCHSECONDS$'\t'$exit$'\t'$dir$'\t'$REPLY
+  FLICK_CMD=
+  return 0
+}
+
 _flick_down() { (( FLICK_OPEN )) && _flick_move +1 || zle .down-line-or-history }
 _flick_up()   { (( FLICK_OPEN )) && _flick_move -1 || zle .up-line-or-history }
 _flick_esc()  { _flick_clear }
@@ -155,6 +187,8 @@ _flick_right() {
   fi
 }
 
+add-zsh-hook preexec _flick_preexec
+add-zsh-hook precmd _flick_precmd
 add-zle-hook-widget line-pre-redraw _flick_pre_redraw
 add-zle-hook-widget line-finish _flick_line_finish
 for w in _flick_down _flick_up _flick_esc _flick_tab _flick_right; do zle -N $w; done

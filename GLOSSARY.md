@@ -42,6 +42,10 @@ _Avoid_: compsys fallback, zsh completion
 One command the user ran, with the directory it ran in, its exit code and a timestamp.
 _Avoid_: History line, command log
 
+**History line**:
+A Suggestion drawn from History, which replaces the whole line rather than the current word.
+_Avoid_: History suggestion, recent command
+
 **Preset**:
 A named combination of enabled Sources and their weights, such as `history-only` or `all`.
 _Avoid_: Mode, profile

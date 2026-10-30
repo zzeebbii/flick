@@ -61,6 +61,8 @@ Every change is measured against these with `flick bench`. They are targets, to 
 2. Frecency: Suggestions used often and recently rank higher.
 3. A boost for commands previously run in the current directory.
 
+Menu order: the best History line comes first, so it is also the Ghost text. Then come Spec Suggestions, ordered by how often the user has run each one, then up to 3 more History lines. A History line replaces the whole line; any other Suggestion replaces only the current word.
+
 ### Display
 
 - **Ghost text**: the top Suggestion, dimmed, after the cursor. It replaces `zsh-autosuggestions`.
