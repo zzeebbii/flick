@@ -10,8 +10,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-/// Commands containing these (case-insensitive) are never recorded (Q24).
-const SECRET_PATTERNS: &[&str] = &["password", "token=", "secret"];
 /// Directories remembered per command, for the current-directory boost.
 const MAX_DIRS: usize = 8;
 
@@ -23,16 +21,20 @@ struct Entry {
     dirs: Vec<(u64, u32)>, // (hash of directory, uses there)
 }
 
-#[derive(Default)]
 pub struct History {
+    /// Commands containing any of these (case-insensitive) are never recorded (Q24).
+    pub ignore: Vec<String>,
     entries: Vec<Entry>,
     file: Option<File>,
 }
 
 impl History {
     /// Loads `path`. If it doesn't exist yet, first imports zsh's history from `import_from`.
-    pub fn open(path: &Path, import_from: Option<&Path>) -> History {
-        let mut h = History::default();
+    pub fn open(path: &Path, import_from: Option<&Path>, ignore: Vec<String>) -> History {
+        let mut h = History {
+            ignore,
+            ..History::default()
+        };
         if !path.exists() {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
@@ -43,7 +45,7 @@ impl History {
                 .map(|b| parse_zsh_history(&b));
             let mut out = String::new();
             for (time, cmd) in imported.unwrap_or_default() {
-                if recordable(&cmd) {
+                if h.recordable(&cmd) {
                     out.push_str(&format!("{time}\t\t\t{}\n", escape(&cmd)));
                 }
             }
@@ -79,7 +81,7 @@ impl History {
     /// Records a command the user just ran, in memory and on disk.
     pub fn record(&mut self, time: u64, exit: Option<i32>, dir: &str, cmd: &str) {
         let cmd = cmd.trim_end();
-        if !recordable(cmd) {
+        if !self.recordable(cmd) {
             return;
         }
         self.add(time, exit, dir, cmd);
@@ -195,11 +197,26 @@ fn describe(e: &Entry, now: u64) -> String {
     format!("history · {}× · {ago}", e.uses)
 }
 
-fn recordable(cmd: &str) -> bool {
-    let lower = cmd.to_lowercase();
-    !cmd.trim().is_empty()
-        && !cmd.starts_with(' ')
-        && !SECRET_PATTERNS.iter().any(|p| lower.contains(p))
+impl Default for History {
+    fn default() -> Self {
+        History {
+            ignore: crate::config::HistoryConfig::default().ignore,
+            entries: vec![],
+            file: None,
+        }
+    }
+}
+
+impl History {
+    fn recordable(&self, cmd: &str) -> bool {
+        let lower = cmd.to_lowercase();
+        !cmd.trim().is_empty()
+            && !cmd.starts_with(' ')
+            && !self
+                .ignore
+                .iter()
+                .any(|p| lower.contains(&p.to_lowercase()))
+    }
 }
 
 fn hash(s: &str) -> u64 {
@@ -384,10 +401,10 @@ mod tests {
         let zsh = dir.join("zsh_history");
         fs::write(&zsh, ": 5:0;git status\n: 6:0;git stash\n").unwrap();
         let path = dir.join("h/history.tsv");
-        let mut h = History::open(&path, Some(&zsh));
+        let mut h = History::open(&path, Some(&zsh), vec![]);
         h.record(7, Some(0), "/tmp", "echo a\tb\nc");
         drop(h);
-        let h = History::open(&path, None);
+        let h = History::open(&path, None, vec![]);
         assert_eq!(h.entries.len(), 3);
         assert!(h.entries.iter().any(|e| &*e.cmd == "echo a\tb\nc"));
         assert_eq!(

@@ -7,6 +7,7 @@ root=${0:A:h:h}
 tmp=$(mktemp -d)
 trap 'pkill -f "flick serve $tmp/s.sock"; rm -rf $tmp' EXIT
 export FLICK_HISTORY=$tmp/history.tsv FLICK_HISTFILE=$tmp/none  # never touch the real History
+export FLICK_CONFIG=$tmp/config.toml XDG_CACHE_HOME=$tmp/cache     # ... or the real config and cache
 source $root/flick.zsh
 FLICK_SOCK=$tmp/s.sock
 alias gco='git checkout'
@@ -83,5 +84,16 @@ type_line 'git pu'
 expect 'Leading space is not recorded'    '[[ ${FLICK_KIND[1]} != l ]]'
 grep -q "git checkout main" $FLICK_HISTORY
 expect 'History is written to disk'       '(( $? == 0 ))'
+
+# Config: a changed config.toml is picked up the next time flick.zsh is sourced.
+print -r -- $'rows = 3\ntheme = "nerd"\n[keys]\nclose = "^G"' > $FLICK_CONFIG
+source $root/flick.zsh
+type_line 'git '
+expect 'rows = 3 limits the Menu'        '(( ${#${(f)POSTDISPLAY}} == 4 ))'  # Ghost text line + 3 rows
+expect 'Theme icons are drawn'           '[[ ${${(f)POSTDISPLAY}[2]} == $FLICK_ICON_HISTORY* && ${${(f)POSTDISPLAY}[3]} == $FLICK_ICON_COMMAND* ]]'
+expect 'Keys can be rebound'             '[[ "$(bindkey "^G")" == *_flick_esc ]]'
+print -r -- 'rows = 99' > $FLICK_CONFIG
+source $root/flick.zsh
+expect 'Bad config: defaults and a message' '(( FLICK_ROWS == 8 )) && [[ $FLICK_CONFIG_ERROR == *"rows must be 1-20"* ]]'
 
 exit $fails

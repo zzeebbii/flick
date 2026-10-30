@@ -7,8 +7,27 @@ typeset -g FLICK_SOCK=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/flick-$UID.sock
 (( $#FLICK_SOCK < 100 )) || FLICK_SOCK=/tmp/flick-$UID.sock  # macOS caps socket paths at ~104 bytes
 typeset -g FLICK_BIN=${0:A:h}/target/release/flick
 [[ -x $FLICK_BIN ]] || FLICK_BIN=${commands[flick]:-}
-typeset -g FLICK_TRIGGER=${FLICK_TRIGGER:-typing}  # typing | tab (Trigger mode)
-typeset -gi FLICK_ROWS=${FLICK_ROWS:-8}
+
+# Settings from config.toml, via `flick config zsh`. Cached: regenerated only when the config,
+# a theme or the binary is newer than the cache, so startup normally just sources one file.
+typeset -g FLICK_TRIGGER=typing FLICK_NATIVE=1 FLICK_CONFIG_ERROR=  # Trigger mode: typing | tab
+typeset -gi FLICK_ROWS=8
+typeset -g FLICK_STYLE_GHOST=fg=8 FLICK_STYLE_NAME=fg=6 FLICK_STYLE_DESC=fg=8 FLICK_STYLE_SELECTED=standout FLICK_STYLE_HISTORY=fg=5
+typeset -g FLICK_ICON_HISTORY= FLICK_ICON_COMMAND= FLICK_ICON_OPTION= FLICK_ICON_FILE= FLICK_ICON_FOLDER=
+typeset -g FLICK_KEY_ACCEPT='^I' FLICK_KEY_ACCEPT_GHOST='^[[C' FLICK_KEY_UP='^[[A' FLICK_KEY_DOWN='^[[B' FLICK_KEY_CLOSE='^['
+() {
+  emulate -L zsh
+  local cfg=${FLICK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/flick/config.toml}
+  local cache=${XDG_CACHE_HOME:-$HOME/.cache}/flick/config.zsh first=
+  local -a theme=(${cfg:h}/themes/*.toml(N.om[1]))  # newest theme file
+  [[ -f $cache ]] && read -r first < $cache
+  if [[ -n $FLICK_BIN ]] && { [[ $first != "# for $cfg" || $FLICK_BIN -nt $cache || $cfg -nt $cache ]] ||
+       [[ -n $theme[1] && $theme[1] -nt $cache ]] }; then
+    mkdir -p ${cache:h} 2>/dev/null
+    { print -r -- "# for $cfg"; FLICK_CONFIG=$cfg $FLICK_BIN config zsh } >| $cache 2>/dev/null
+  fi
+  [[ -f $cache ]] && source $cache
+}
 
 typeset -g FLICK_FD=
 typeset -ga FLICK_KIND FLICK_INSERT FLICK_DESC  # current Suggestions; kind w = word, l = whole line
@@ -21,7 +40,7 @@ typeset -g FLICK_CMD=                # command line now running, for History
 typeset -gi FLICK_WATCHING=0         # zle -F handler installed on FLICK_FD
 # Whatever Tab did before flick (expand-or-complete, fzf-tab, ...): Native completion, used
 # when flick has nothing to suggest.
-typeset -g FLICK_NATIVE_TAB=${${(z)"$(bindkey '^I')"}[2]:-expand-or-complete}  # `"^I" widget`
+typeset -g FLICK_NATIVE_TAB=${${(z)"$(bindkey $FLICK_KEY_ACCEPT)"}[2]:-expand-or-complete}  # `"^I" widget`
 [[ $FLICK_NATIVE_TAB == (_flick_tab|undefined-key) ]] && FLICK_NATIVE_TAB=expand-or-complete  # sourced twice
 
 _flick_connect() {
@@ -129,7 +148,7 @@ _flick_render() {
   (( FLICK_NO_GHOST )) || [[ $pick != ${typed}* ]] || ghost=${pick#$typed}
   local s=$#BUFFER
   POSTDISPLAY=$ghost
-  region_highlight+=("$s $(( s + $#ghost )) fg=8,memo=flick")
+  region_highlight+=("$s $(( s + $#ghost )) $FLICK_STYLE_GHOST,memo=flick")
   # Short windows and multi-line commands get Ghost text only.
   (( LINES >= 10 )) && [[ $BUFFER != *$'\n'* ]] || return
 
@@ -138,19 +157,29 @@ _flick_render() {
   local -i namew=0 i
   for (( i = top; i < top + rows; i++ )); do (( namew = $#FLICK_INSERT[i] > namew ? $#FLICK_INSERT[i] : namew )); done
   (( namew = namew > 32 ? 32 : namew ))
-  local row more= start
+  local row more= start icon name_style
+  local -i iconw=0
+  [[ -n $FLICK_ICON_HISTORY$FLICK_ICON_COMMAND$FLICK_ICON_OPTION$FLICK_ICON_FILE$FLICK_ICON_FOLDER ]] && iconw=2
   (( n > rows )) && more=" ($FLICK_SEL/$n)"
   for (( i = top; i < top + rows; i++ )); do
-    row="${(r:namew:)FLICK_INSERT[i]}  ${FLICK_DESC[i]}"
+    icon= name_style=$FLICK_STYLE_NAME
+    if [[ ${FLICK_KIND[i]} == l ]]; then icon=$FLICK_ICON_HISTORY name_style=$FLICK_STYLE_HISTORY
+    elif [[ ${FLICK_INSERT[i]} == -* ]]; then icon=$FLICK_ICON_OPTION
+    elif [[ ${FLICK_INSERT[i]} == */ ]]; then icon=$FLICK_ICON_FOLDER
+    elif [[ ${FLICK_DESC[i]} == File ]]; then icon=$FLICK_ICON_FILE
+    else icon=$FLICK_ICON_COMMAND
+    fi
+    (( iconw )) && icon="${(r:1:)icon} " || icon=
+    row="$icon${(r:namew:)FLICK_INSERT[i]}  ${FLICK_DESC[i]}"
     (( i == top )) && row+=$more
     row=${row[1,COLUMNS-1]}
     start=$(( s + $#POSTDISPLAY + 1 ))
     POSTDISPLAY+=$'\n'$row
     if (( i == FLICK_SEL )); then
-      region_highlight+=("$start $(( start + $#row )) standout,memo=flick")
+      region_highlight+=("$start $(( start + $#row )) $FLICK_STYLE_SELECTED,memo=flick")
     else
-      region_highlight+=("$start $(( start + namew )) fg=6,memo=flick")
-      region_highlight+=("$(( start + namew )) $(( start + $#row )) fg=8,memo=flick")
+      region_highlight+=("$start $(( start + iconw + namew )) $name_style,memo=flick")
+      region_highlight+=("$(( start + iconw + namew )) $(( start + $#row )) $FLICK_STYLE_DESC,memo=flick")
     fi
   done
   FLICK_OPEN=1
@@ -176,6 +205,7 @@ _flick_move() {  # $1 = +1 or -1, wraps around
 # Runs before every redraw, so any edit (typing, paste, kill, undo) refreshes the Menu.
 _flick_pre_redraw() {
   [[ $LBUFFER == $FLICK_LAST ]] && return
+  [[ -z $FLICK_CONFIG_ERROR ]] || { zle -M "flick: $FLICK_CONFIG_ERROR (using defaults)"; FLICK_CONFIG_ERROR= }
   if [[ $FLICK_TRIGGER == typing && $LASTWIDGET == (*self-insert*|*delete-char*|*kill*|*paste*|undo|redo|_flick_*) ]]; then
     (( FLICK_NO_GHOST )) || (( ! $+functions[_zsh_autosuggest_start] )) || {
       FLICK_NO_GHOST=1; zle -M "flick: zsh-autosuggestions is loaded; flick won't draw Ghost text. Remove it from your plugins."
@@ -214,7 +244,7 @@ _flick_tab() {
     _flick_render
   else
     _flick_clear
-    zle $FLICK_NATIVE_TAB
+    (( FLICK_NATIVE )) && zle $FLICK_NATIVE_TAB
   fi
 }
 # Right arrow: take the Ghost text. Otherwise move right as usual.
@@ -231,9 +261,13 @@ add-zsh-hook precmd _flick_precmd
 add-zle-hook-widget line-pre-redraw _flick_pre_redraw
 add-zle-hook-widget line-finish _flick_line_finish
 for w in _flick_down _flick_up _flick_esc _flick_tab _flick_right _flick_on_data; do zle -N $w; done
-bindkey '^[[B' _flick_down  '^[OB' _flick_down
-bindkey '^[[A' _flick_up    '^[OA' _flick_up
-bindkey '^[[C' _flick_right '^[OC' _flick_right
-bindkey '^I'   _flick_tab
-bindkey '^['   _flick_esc
+() {
+  local key widget
+  for key widget in $FLICK_KEY_DOWN _flick_down $FLICK_KEY_UP _flick_up $FLICK_KEY_ACCEPT_GHOST _flick_right \
+                    $FLICK_KEY_ACCEPT _flick_tab $FLICK_KEY_CLOSE _flick_esc; do
+    bindkey $key $widget
+    # Arrow keys send ^[O… instead of ^[[… in the terminal's "application" mode.
+    [[ $key == '^[['[ABCD] ]] && bindkey "^[O${key[-1]}" $widget
+  done
+}
 unset w

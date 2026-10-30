@@ -36,8 +36,8 @@ Every change is measured against these with `flick bench`. They are targets, to 
 
 ### Sources
 
-- All five Sources, each switchable on or off and weighted in config: **Spec**, **Generator**, **Files**, **History**, **Native completion**.
-- **Presets** for common combinations, at least `all` and `history-only`.
+- All five Sources, each switchable on or off in config: **Spec**, **Generator**, **Files**, **History**, **Native completion**. Per-Source weights are deferred: ranking already orders Spec Suggestions by History use, and no case for weights has come up yet.
+- **Presets** for common combinations: `all`, `history-only` and `specs-only`.
 - **Native completion** is used for CLIs with no Spec, and wherever a Spec needs code flick doesn't run. When flick has nothing to suggest, Tab hands over to whatever Tab did before flick loaded (zsh's own completion, fzf-tab, ...), drawn by zsh itself. Showing Native completion results inside flick's Menu (capturing them as fzf-tab does) is deferred (Q32).
 - At the command position, every executable on `PATH` is a Suggestion, alongside CLIs that have a Spec.
 
@@ -48,7 +48,7 @@ Every change is measured against these with `flick bench`. They are targets, to 
 - Generator results rank above files and static values.
 - Generators never block typing. Static Suggestions show immediately, and Generator results fill in when they arrive.
 - Each Generator has its own timeout and a short-lived cache.
-- Generators that use the network can be disabled per CLI.
+- Generators can be disabled per CLI (`[generators] disable`), e.g. for CLIs that call the network.
 
 ### History
 
@@ -84,7 +84,7 @@ Menu order: the best History line comes first, so it is also the Ghost text. The
 
 ### Customisation
 
-- **Config**: `~/.config/flick/config.toml`.
+- **Config**: `~/.config/flick/config.toml`. `flick config example` prints every setting, and `flick config check` validates the file. A broken config falls back to defaults, with a one-line message in the shell.
 - **Themes**: colours, borders and icons only, never layout. The default Theme uses the terminal's own ANSI palette, so it follows light and dark mode. One alternative Theme ships with v1.
 - **User specs**: YAML files in `~/.config/flick/specs/`, using the same structure as converted Fig specs.
 

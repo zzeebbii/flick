@@ -1,5 +1,6 @@
 //! Turns the line being typed into Suggestions: Spec walking for the current word, History for
 //! the whole line, one ranking for both.
+use crate::config::Sources;
 use crate::generate::{self, Generators, Notify};
 use crate::history::History;
 use crate::spec::{Arg, LoadSpec, Opt, Store, Subcommand, SuggestionSpec};
@@ -14,7 +15,40 @@ pub struct Ctx<'a> {
     pub gens: Option<(&'a Arc<Generators>, &'a Notify)>,
     /// Set when a Generator is still running for this request.
     pub pending: Cell<bool>,
+    pub sources: Sources,
+    /// CLIs whose Generators never run (`[generators] disable`).
+    pub disabled: &'a [String],
 }
+
+impl Ctx<'_> {
+    pub fn new<'a>(store: &'a Arc<Store>, dir: &'a str, sources: Sources) -> Ctx<'a> {
+        Ctx {
+            store,
+            dir,
+            gens: None,
+            pending: Cell::default(),
+            sources,
+            disabled: &[],
+        }
+    }
+
+    /// Same request, but no Generators run.
+    fn without_generators(&self) -> Ctx<'_> {
+        Ctx {
+            gens: None,
+            ..Ctx::new(self.store, self.dir, self.sources)
+        }
+    }
+}
+
+/// Everything on: what tests and `flick complete` use.
+pub const ALL: Sources = Sources {
+    history: true,
+    specs: true,
+    generators: true,
+    files: true,
+    native: true,
+};
 
 #[derive(Debug, PartialEq)]
 pub struct Suggestion {
@@ -42,7 +76,14 @@ const EXTRA_LINES: usize = 3;
 /// text; then Spec Suggestions ordered by how much the user has used each; then a few more
 /// History lines.
 pub fn suggest(cx: &Ctx, history: &History, r: &Request) -> Vec<Suggestion> {
-    let mut words = complete(cx, r.words);
+    let mut words = if cx.sources.specs {
+        complete(cx, r.words)
+    } else {
+        vec![]
+    };
+    if !cx.sources.history {
+        return words;
+    }
     let typed: Vec<&str> = r
         .words
         .iter()
@@ -84,6 +125,9 @@ pub fn complete(cx: &Ctx, words: &[String]) -> Vec<Suggestion> {
     let mut out = match done.split_first() {
         None => commands(cx.store, current),
         Some((cmd, rest)) => match cx.store.get(cmd) {
+            Some(spec) if cx.disabled.contains(cmd) => {
+                walk(&cx.without_generators(), &spec, rest, current, vec![])
+            }
             Some(spec) => walk(cx, &spec, rest, current, vec![]),
             // No Spec: nothing here, so Tab hands over to zsh's own completion (Native completion).
             None => vec![],
@@ -277,6 +321,9 @@ fn arg_suggestions(cx: &Ctx, arg: &Arg, current: &str) -> Vec<Suggestion> {
 }
 
 fn template_suggestions(cx: &Ctx, template: &str, current: &str) -> Vec<Suggestion> {
+    if !cx.sources.files {
+        return vec![];
+    }
     match template {
         "filepaths" => file_suggestions(cx, current, false),
         "folders" => file_suggestions(cx, current, true),
@@ -342,6 +389,7 @@ mod tests {
     fn store() -> Arc<Store> {
         Arc::new(Store::new(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("specs"),
+            None,
         ))
     }
 
@@ -351,18 +399,10 @@ mod tests {
             words.push(String::new());
         }
         let s = store();
-        complete(
-            &Ctx {
-                store: &s,
-                dir: env!("CARGO_MANIFEST_DIR"),
-                gens: None,
-                pending: Default::default(),
-            },
-            &words,
-        )
-        .into_iter()
-        .map(|s| s.insert)
-        .collect()
+        complete(&Ctx::new(&s, env!("CARGO_MANIFEST_DIR"), ALL), &words)
+            .into_iter()
+            .map(|s| s.insert)
+            .collect()
     }
 
     #[test]
@@ -403,15 +443,7 @@ mod tests {
     #[test]
     fn specs_load_lazily() {
         let s = store();
-        complete(
-            &Ctx {
-                store: &s,
-                dir: "",
-                gens: None,
-                pending: Default::default(),
-            },
-            &["git".into(), "ch".into()],
-        );
+        complete(&Ctx::new(&s, "", ALL), &["git".into(), "ch".into()]);
         assert_eq!(s.loaded_count(), 1);
     }
 
@@ -423,12 +455,7 @@ mod tests {
         let req = |line: &'static str| line.split(' ').map(String::from).collect::<Vec<_>>();
         let words = req("gi");
         let got = suggest(
-            &Ctx {
-                store: &s,
-                dir: "/r",
-                gens: None,
-                pending: Default::default(),
-            },
+            &Ctx::new(&s, "/r", ALL),
             &h,
             &Request {
                 dir: "/r",
@@ -441,12 +468,7 @@ mod tests {
         assert_eq!(got[1].insert, "git"); // used, so it beats `gibo`, which sorts first
         let words = req("git che");
         let got = suggest(
-            &Ctx {
-                store: &s,
-                dir: "/r",
-                gens: None,
-                pending: Default::default(),
-            },
+            &Ctx::new(&s, "/r", ALL),
             &h,
             &Request {
                 dir: "/r",
@@ -477,10 +499,8 @@ mod tests {
         });
         let dir = env!("CARGO_MANIFEST_DIR");
         let cx = Ctx {
-            store: &s,
-            dir,
             gens: Some((&gens, &notify)),
-            pending: Cell::default(),
+            ..Ctx::new(&s, dir, ALL)
         };
         let words: Vec<String> = ["git", "checkout", ""].map(String::from).to_vec();
         complete(&cx, &words); // starts `git branch` in the background
@@ -497,6 +517,70 @@ mod tests {
             .map(|s| s.insert)
             .collect();
         assert!(got.contains(&branch), "{branch} not in {got:?}");
+    }
+
+    #[test]
+    fn user_specs_in_yaml() {
+        let user = std::env::temp_dir().join(format!("flick-user-specs-{}", std::process::id()));
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("mytool.yaml"),
+            "name: mytool\nsubcommands:\n  - name: start\n    description: Start it\n  - name: stop\noptions:\n  - name: [-v, --verbose]\n",
+        )
+        .unwrap();
+        let s = Arc::new(Store::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("specs"),
+            Some(user.clone()),
+        ));
+        let cx = Ctx::new(&s, "", ALL);
+        let words = |l: &str| l.split(' ').map(String::from).collect::<Vec<_>>();
+        let got: Vec<String> = complete(&cx, &words("mytool st"))
+            .into_iter()
+            .map(|s| s.insert)
+            .collect();
+        assert_eq!(got, vec!["start", "stop"]);
+        assert!(
+            complete(&cx, &words("mytool --v"))
+                .iter()
+                .any(|s| s.insert == "--verbose")
+        );
+        assert!(
+            complete(&cx, &words("myt"))
+                .iter()
+                .any(|s| s.insert == "mytool")
+        );
+        std::fs::remove_dir_all(&user).unwrap();
+    }
+
+    #[test]
+    fn sources_can_be_switched_off() {
+        let s = store();
+        let mut h = History::default();
+        h.record(100, Some(0), "", "git checkout main");
+        let words: Vec<String> = ["git", "ch"].map(String::from).to_vec();
+        let r = Request {
+            dir: "",
+            line: "git ch",
+            words: &words,
+            now: 200,
+        };
+        let only_history = Sources {
+            specs: false,
+            generators: false,
+            files: false,
+            ..ALL
+        };
+        let got = suggest(&Ctx::new(&s, "", only_history), &h, &r);
+        assert!(got.iter().all(|s| s.whole_line) && !got.is_empty());
+        let no_history = Sources {
+            history: false,
+            ..ALL
+        };
+        assert!(
+            suggest(&Ctx::new(&s, "", no_history), &h, &r)
+                .iter()
+                .all(|s| !s.whole_line)
+        );
     }
 
     #[test]

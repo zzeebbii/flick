@@ -182,6 +182,8 @@ impl Opt {
 /// Loads Specs from disk on first use and keeps them until they go unused.
 pub struct Store {
     dir: PathBuf,
+    /// User specs (YAML or JSON); they replace a shipped Spec of the same name.
+    user_dir: Option<PathBuf>,
     /// CLI names that have a top-level Spec, sorted.
     pub names: Vec<String>,
     loaded: Mutex<HashMap<String, (Arc<Subcommand>, Instant)>>,
@@ -189,21 +191,25 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(dir: PathBuf) -> Self {
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
+    pub fn new(dir: PathBuf, user_dir: Option<PathBuf>) -> Self {
+        let mut names: Vec<String> = [Some(&dir), user_dir.as_ref()]
             .into_iter()
             .flatten()
-            .flatten()
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
             .filter_map(|e| {
-                e.file_name()
-                    .to_str()?
-                    .strip_suffix(".json")
+                let f = e.file_name();
+                let f = f.to_str()?;
+                [".json", ".yaml", ".yml"]
+                    .iter()
+                    .find_map(|x| f.strip_suffix(x))
                     .map(String::from)
             })
             .collect();
         names.sort();
+        names.dedup();
         Store {
             dir,
+            user_dir,
             names,
             loaded: Mutex::default(),
             commands: Mutex::default(),
@@ -222,10 +228,23 @@ impl Store {
             *used = now;
             return Some(Arc::clone(spec));
         }
-        let bytes = std::fs::read(self.dir.join(format!("{path}.json"))).ok()?;
-        let spec: Arc<Subcommand> = Arc::new(serde_json::from_slice(&bytes).ok()?);
+        let spec: Arc<Subcommand> = Arc::new(self.read(path)?);
         loaded.insert(path.to_string(), (Arc::clone(&spec), now));
         Some(spec)
+    }
+
+    fn read(&self, path: &str) -> Option<Subcommand> {
+        if let Some(user) = &self.user_dir {
+            for ext in ["yaml", "yml"] {
+                if let Ok(text) = std::fs::read_to_string(user.join(format!("{path}.{ext}"))) {
+                    return serde_norway::from_str(&text).ok();
+                }
+            }
+            if let Ok(bytes) = std::fs::read(user.join(format!("{path}.json"))) {
+                return serde_json::from_slice(&bytes).ok();
+            }
+        }
+        serde_json::from_slice(&std::fs::read(self.dir.join(format!("{path}.json"))).ok()?).ok()
     }
 
     /// Every command name: CLIs with a Spec plus executables on `PATH`, sorted. Re-read in the

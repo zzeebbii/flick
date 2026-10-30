@@ -3,6 +3,9 @@
 //! Usage:
 //!   flick serve <socket>       run the background process
 //!   flick complete <word>...   print Suggestions once, for debugging; the last word is the one being typed
+//!   flick config zsh|check|example
+//!                              shell settings / validate config.toml / print a commented example
+//!   flick bench                measure speed and memory against the budgets
 //!
 //! Protocol: one request per line, fields separated by tabs. `dir`, `line` and `cmd` are escaped
 //! (`\\`, `\t`, `\n`); words have no tabs or newlines.
@@ -13,11 +16,14 @@
 //!
 //! An answer ends with a `~` line before the empty line when a Generator is still running.
 //! When it finishes, flick sends a line `!` between answers: asking again gives new Suggestions.
+mod bench;
 mod complete;
+mod config;
 mod generate;
 mod history;
 mod spec;
 
+use config::Config;
 use history::{History, unescape};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -36,18 +42,57 @@ struct State {
     store: Arc<spec::Store>,
     history: Mutex<History>,
     gens: Arc<generate::Generators>,
+    /// config.toml and its modification time; re-read when the file changes.
+    config: Mutex<(Option<SystemTime>, Config)>,
+}
+
+impl State {
+    fn new() -> State {
+        let path = config::config_path();
+        let cfg = Config::load(&path).unwrap_or_default();
+        State {
+            store: Arc::new(spec::Store::new(
+                specs_dir(),
+                Some(config::config_dir().join("specs")),
+            )),
+            history: Mutex::new(History::open(
+                &history_path(),
+                Some(&zsh_history_path()),
+                cfg.history.ignore.clone(),
+            )),
+            gens: Arc::default(),
+            config: Mutex::new((mtime(&path), cfg)),
+        }
+    }
+
+    /// The current Source switches and disabled CLIs, re-reading config.toml if it changed.
+    fn settings(&self) -> (config::Sources, Vec<String>) {
+        let path = config::config_path();
+        let mut c = self.config.lock().unwrap();
+        let now = mtime(&path);
+        if now != c.0 {
+            // A broken edit keeps the last good config; `flick config check` shows the error.
+            if let Ok(cfg) = Config::load(&path) {
+                self.history.lock().unwrap().ignore = cfg.history.ignore.clone();
+                c.1 = cfg;
+            }
+            c.0 = now;
+        }
+        (c.1.sources(), c.1.generators.disable.clone())
+    }
+}
+
+fn mtime(p: &Path) -> Option<SystemTime> {
+    fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let state = State {
-        store: Arc::new(spec::Store::new(specs_dir())),
-        history: Mutex::new(History::open(&history_path(), Some(&zsh_history_path()))),
-        gens: Arc::default(),
-    };
-    match args.first().map(String::as_str) {
-        Some("serve") if args.len() == 2 => serve(Path::new(&args[1]), Arc::new(state)),
-        Some("complete") if args.len() >= 2 => {
+    let arg = |i: usize| args.get(i).map(String::as_str);
+    match (arg(0), arg(1)) {
+        (Some("serve"), Some(socket)) => serve(Path::new(socket), Arc::new(State::new())),
+        (Some("complete"), Some(_)) => {
+            let state = State::new();
             let dir = env::current_dir().unwrap_or_default();
             let line = args[1..].join(" ");
             let r = complete::Request {
@@ -56,12 +101,7 @@ fn main() {
                 words: &args[1..],
                 now: now_secs(),
             };
-            let cx = complete::Ctx {
-                store: &state.store,
-                dir: r.dir,
-                gens: None,
-                pending: Default::default(),
-            };
+            let cx = complete::Ctx::new(&state.store, r.dir, complete::ALL);
             for s in complete::suggest(&cx, &state.history.lock().unwrap(), &r) {
                 println!(
                     "{}\t{}\t{}",
@@ -71,19 +111,44 @@ fn main() {
                 );
             }
         }
+        (Some("config"), Some("example")) => print!("{}", config::EXAMPLE),
+        (Some("config"), Some(what @ ("zsh" | "check"))) => {
+            let path = config::config_path();
+            let loaded = Config::load(&path).and_then(|c| c.theme().map(|t| (c, t)));
+            if what == "check" {
+                match loaded {
+                    Ok((c, _)) => println!("{}: ok\nSources: {:?}", path.display(), c.sources()),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        process::exit(1);
+                    }
+                }
+                return;
+            }
+            match loaded {
+                Ok((c, t)) => print!("{}", config::to_zsh(&c, &t, None)),
+                Err(e) => print!(
+                    "{}",
+                    config::to_zsh(&Config::default(), &config::Theme::default(), Some(&e))
+                ),
+            }
+        }
+        (Some("bench"), None) => process::exit(bench::run()),
         _ => {
-            eprintln!("usage: flick serve <socket> | flick complete <word>...");
+            eprintln!(
+                "usage: flick serve <socket> | flick complete <word>... | flick config zsh|check|example | flick bench"
+            );
             process::exit(2);
         }
     }
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     env::var_os("HOME").unwrap_or_default().into()
 }
 
 /// `$FLICK_HISTORY`, else `$XDG_DATA_HOME/flick/history.tsv`, else `~/.local/share/flick/history.tsv`.
-fn history_path() -> PathBuf {
+pub fn history_path() -> PathBuf {
     if let Some(p) = env::var_os("FLICK_HISTORY") {
         return p.into();
     }
@@ -93,7 +158,7 @@ fn history_path() -> PathBuf {
 }
 
 /// zsh's history file to import on first run: `$FLICK_HISTFILE` (the shell passes its `$HISTFILE`).
-fn zsh_history_path() -> PathBuf {
+pub fn zsh_history_path() -> PathBuf {
     env::var_os("FLICK_HISTFILE").map_or_else(|| home().join(".zsh_history"), PathBuf::from)
 }
 
@@ -184,6 +249,7 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
         let fields: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
         match fields.as_slice() {
             ["r", time, exit, dir, cmd] => {
+                state.settings(); // picks up a changed `[history] ignore`
                 let mut h = state.history.lock().unwrap();
                 h.record(
                     time.parse().unwrap_or_else(|_| now_secs()),
@@ -201,11 +267,12 @@ fn handle(stream: UnixStream, state: &State) -> std::io::Result<()> {
                     words: &words,
                     now: now_secs(),
                 };
+                let (sources, disabled) = state.settings();
+                let gens = sources.generators.then_some((&state.gens, &notify));
                 let cx = complete::Ctx {
-                    store: &state.store,
-                    dir: &dir,
-                    gens: Some((&state.gens, &notify)),
-                    pending: Default::default(),
+                    gens,
+                    disabled: &disabled,
+                    ..complete::Ctx::new(&state.store, &dir, sources)
                 };
                 let suggestions = complete::suggest(&cx, &state.history.lock().unwrap(), &r);
                 let mut resp = String::new();

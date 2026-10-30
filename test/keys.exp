@@ -9,6 +9,9 @@ set tmp [exec mktemp -d]
 # Never touch the real History.
 set env(FLICK_HISTORY) $tmp/history.tsv
 set env(FLICK_HISTFILE) $tmp/none
+# ... nor the real config and cache.
+set env(FLICK_CONFIG) $tmp/config.toml
+set env(XDG_CACHE_HOME) $tmp/cache
 set timeout 5
 log_user 0
 spawn -noecho zsh -f -i
