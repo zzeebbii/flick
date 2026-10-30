@@ -10,12 +10,13 @@ zsh -f                        # a clean shell; zsh-autosuggestions would clash
 source ./flick.zsh
 ```
 
-Type `git ch` and press → to accept.
+Type `git ch`: ↑/↓ choose a Suggestion, Tab takes it (plus a space), → takes the Ghost text, Esc closes the Menu.
 
 ## Develop
 
 ```sh
 cargo test --release            # Spec walking, plus a check that every Spec in specs/ loads
 zsh test/zle.zsh                # zsh side against a real background process
+expect test/keys.exp            # real keystrokes in a real terminal
 flick complete git checkout --  # print Suggestions for a line; the last word is the one being typed
 ```

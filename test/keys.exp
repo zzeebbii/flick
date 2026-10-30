@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+# Real-terminal check: types into an interactive zsh with flick.zsh loaded and checks the line.
+# Run: expect test/keys.exp   (after cargo build --release)
+#
+# Each line is captured by pressing Ctrl-A, '#', Enter: with interactive_comments the line becomes
+# a comment (nothing runs) and zshaddhistory writes it to a file.
+set root [file dirname [file dirname [file normalize [info script]]]]
+set tmp [exec mktemp -d]
+set timeout 5
+log_user 0
+spawn -noecho zsh -f -i
+stty rows 40 columns 120 < $spawn_out(slave,name)
+# The prompt marker is split in the command so `expect` can't match the echoed command itself.
+send "PS1='PRO''MPT> '; source $root/flick.zsh; FLICK_SOCK=$tmp/s.sock; alias gco='git checkout'\r"
+expect "PROMPT> "
+send "setopt interactive_comments; zshaddhistory() { print -r -- \${1%\$'\\n'} >| $tmp/buf; return 1 }\r"
+expect "PROMPT> "
+
+set fails 0
+proc check {name keys want} {
+  global tmp fails
+  foreach k $keys { send -- $k; sleep 0.2 }
+  send "\x01#\r"
+  expect "PROMPT> "
+  set f [open "$tmp/buf"]; set got [string range [string trimright [read $f] "\n"] 1 end]; close $f
+  if {$got eq $want} { puts "ok    $name -> '$got'" } else { puts "FAIL  $name: want '$want', got '$got'"; set fails 1 }
+}
+
+check "first keystrokes start flick" [list "git ch" "\t"]        "git checkout "
+check "Down then Tab"                [list "git ch" "\x1b\[B" "\t"] "git cherry-pick "
+check "Right takes Ghost text"       [list "gco --det" "\x1b\[C"]  "gco --detach"
+check "Esc closes; Right moves"      [list "git ch" "\x1b" "\x1b\[C"] "git ch"
+check "Tab twice builds a command"   [list "dock" "\t" "bu" "\t"]   "docker build "
+# The previous line lingers in history as "#docker build ", so Up with the Menu closed recalls it.
+check "Up recalls history when closed" [list "\x1b\[A"]           "#docker build "
+
+send "exit\r"
+expect eof
+catch {exec pkill -f "flick serve $tmp/s.sock"}
+file delete -force $tmp
+exit $fails

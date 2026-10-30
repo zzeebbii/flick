@@ -109,8 +109,20 @@ fn serve(socket: &Path, store: Arc<spec::Store>) {
 
 fn handle(stream: UnixStream, store: &spec::Store) -> std::io::Result<()> {
     let mut out = stream.try_clone()?;
-    for line in BufReader::new(stream).lines() {
-        let words: Vec<String> = line?.split('\t').map(String::from).collect();
+    let mut reader = BufReader::new(stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        // Lossy: a stray non-UTF-8 byte must not drop the connection.
+        let line = String::from_utf8_lossy(&buf);
+        let words: Vec<String> = line
+            .trim_end_matches('\n')
+            .split('\t')
+            .map(String::from)
+            .collect();
         let mut resp = String::new();
         for s in complete::complete(store, &words)
             .into_iter()
@@ -126,7 +138,6 @@ fn handle(stream: UnixStream, store: &spec::Store) -> std::io::Result<()> {
         resp.push('\n');
         out.write_all(resp.as_bytes())?;
     }
-    Ok(())
 }
 
 fn now_secs() -> u64 {
