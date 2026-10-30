@@ -1,0 +1,1 @@
+{"name":"cd","description":"Change the shell working directory","args":{"generators":[{"needsCode":true}],"filterStrategy":"fuzzy","suggestions":[{"name":"-","description":"Switch to the last used folder","hidden":true},{"name":"~","description":"Switch to the home directory","hidden":true}]}}

@@ -1,0 +1,1 @@
+{"name":"unset","description":"Named variable shall be undefined","args":{"name":"string","generators":[{"script":["env"],"needsCode":true}]},"options":[{"name":"-v","description":"Variable definition will be unset"}]}
